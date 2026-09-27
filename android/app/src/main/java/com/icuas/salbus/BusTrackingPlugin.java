@@ -83,7 +83,8 @@ public class BusTrackingPlugin extends Plugin {
                         clean(job.optString("destination", "")),
                         String.valueOf(job.optInt("busesSeen", 0)),
                         joinStops(job.optJSONArray("routeStops")),
-                        clean(job.optString("directionKey", ""))));
+                        clean(job.optString("directionKey", "")),
+                        String.valueOf(job.optInt("skip", 0))));
                 }
             } catch (Exception error) {
                 call.reject("Lista de avisos no valida: " + error.getMessage());
@@ -271,7 +272,10 @@ public class BusTrackingPlugin extends Plugin {
         int status,
         int busesSeen,
         boolean finished,
-        int stopsAway
+        int stopsAway,
+        int nextMinutes,
+        boolean nextArriving,
+        int skip
     ) {
         JSObject payload = new JSObject();
         payload.put("jobId", jobId);
@@ -284,6 +288,11 @@ public class BusTrackingPlugin extends Plugin {
         payload.put("finished", finished);
         // -1 es "no consta", y es distinto de 0, que es "en tu parada".
         payload.put("stopsAway", stopsAway);
+        // El autobus de detras (-1 si no consta), para el aviso que sigue al
+        // segundo: sin el la pantalla solo tendria el tiempo del primero.
+        payload.put("nextMinutes", nextMinutes);
+        payload.put("nextArriving", nextArriving);
+        payload.put("skip", skip);
         payload.put("at", System.currentTimeMillis());
         notifyListeners("arrivalUpdate", payload);
     }
@@ -331,8 +340,11 @@ public class BusTrackingPlugin extends Plugin {
     }
 
     /** Un autobus mas ha pasado por la parada y el aviso sigue con el siguiente. */
-    void emitBusPassed(String jobId, String stopId, String lineId, int busesSeen, int target) {
+    void emitBusPassed(String jobId, String stopId, String lineId, int busesSeen, int target, int skip) {
         JSObject payload = new JSObject();
+        // Autobuses que aun quedan por dejar pasar: si baja, el que acaba de
+        // pasar era uno de los que no se seguian y no cuenta.
+        payload.put("skip", skip);
         payload.put("jobId", jobId);
         payload.put("stopId", stopId);
         payload.put("lineId", lineId);
@@ -359,7 +371,7 @@ public class BusTrackingPlugin extends Plugin {
 
     /** Lo que la web necesita para volver a crear un aviso a partir de su cadena. */
     private static JSObject decodeJob(String raw) {
-        String[] parts = raw.split(java.util.regex.Pattern.quote(BusTrackingService.FIELD_SEPARATOR), 8);
+        String[] parts = raw.split(java.util.regex.Pattern.quote(BusTrackingService.FIELD_SEPARATOR), 9);
         if (parts.length < 5 || parts[0].isEmpty()) {
             return null;
         }

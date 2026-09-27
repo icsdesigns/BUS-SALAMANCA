@@ -321,6 +321,18 @@ public class BusTrackingService extends Service {
         int lastMinutes = -1;
         int missingStreak = 0;
         int busesSeen = 0;
+        /**
+         * Autobuses que hay que dejar pasar antes del que se sigue: 0 sigue al
+         * proximo, 1 al que viene detras. Los pasos se siguen detectando con el
+         * primero (es el unico que la fuente pone a cero minutos); cada paso
+         * mientras quede alguno por dejar pasar solo descuenta, sin sumar a
+         * busesSeen, y a partir de ahi el aviso sigue exactamente igual que uno
+         * normal.
+         */
+        int skip = 0;
+        /** El autobus de detras en la ultima consulta, para la pantalla; -1 si no consta. */
+        int nextMinutes = -1;
+        boolean nextArriving = false;
         /** La vibracion de los 3 minutos ya se ha dado para el autobus en curso. */
         boolean warnedAt3 = false;
         /** La ultima consulta de este aviso se topo con el limite de la fuente. */
@@ -742,7 +754,7 @@ public class BusTrackingService extends Service {
             if (job == null) {
                 continue;
             }
-            String[] parts = raw.split(Pattern.quote(FIELD_SEPARATOR), 8);
+            String[] parts = raw.split(Pattern.quote(FIELD_SEPARATOR), 9);
             Job previous = findJob(job.id);
 
             if (previous != null) {
@@ -750,6 +762,9 @@ public class BusTrackingService extends Service {
                 job.lastMinutes = previous.lastMinutes;
                 job.missingStreak = previous.missingStreak;
                 job.busesSeen = previous.busesSeen;
+                // Como los autobuses contados: lo que ya se dejo pasar aqui no
+                // vuelve a contar porque la web reenvie el valor de partida.
+                job.skip = Math.min(job.skip, previous.skip);
                 job.warnedAt3 = previous.warnedAt3;
                 // La localizacion tambien se conserva: la web reenvia la lista
                 // entera cada vez que cambia cualquier cosa (un ajuste, el otro
@@ -775,12 +790,13 @@ public class BusTrackingService extends Service {
 
     /**
      * Un aviso a partir de su cadena: id, parada, nombre, linea, destino,
-     * autobuses vistos, recorrido y sentido, separados por FIELD_SEPARATOR. El
-     * sentido es el ultimo porque llego despues: una cadena sin el sigue valiendo.
+     * autobuses vistos, recorrido, sentido y autobuses que dejar pasar,
+     * separados por FIELD_SEPARATOR. Los dos ultimos llegaron despues: una
+     * cadena sin ellos sigue valiendo.
      */
     @Nullable
     private static Job parseJob(String raw) {
-        String[] parts = raw.split(Pattern.quote(FIELD_SEPARATOR), 8);
+        String[] parts = raw.split(Pattern.quote(FIELD_SEPARATOR), 9);
         if (parts.length < 5) {
             return null;
         }
@@ -788,14 +804,20 @@ public class BusTrackingService extends Service {
         Job job = new Job(parts[0], parts[1], parts[2], parts[3], parts[4]);
         job.route = parseRoute(parts, 6);
         job.directionKey = parts.length > 7 ? parts[7] : "";
+        job.skip = Math.min(1, Math.max(0, parseInt(parts, 8)));
         return job;
     }
 
-    /** La cadena de un aviso recien empezado, con la cuenta de autobuses a cero. */
+    /**
+     * La cadena de un aviso recien empezado, con la cuenta de autobuses a cero.
+     *
+     * Sin autobuses que dejar pasar: "Siguiente bus" sigue al que viene ahora,
+     * aunque el aviso original fuera del segundo.
+     */
     private static String encodeFresh(Job job) {
         return String.join(FIELD_SEPARATOR,
             job.id, job.stopId, job.stopName, job.lineId, job.destination, "0",
-            String.join(",", job.route), job.directionKey);
+            String.join(",", job.route), job.directionKey, "0");
     }
 
     /**
@@ -1133,6 +1155,10 @@ public class BusTrackingService extends Service {
 
         ArrivalsClient.Arrival arrival =
             result.status == ArrivalsClient.STATUS_OK ? result.findLine(job.lineId) : null;
+        ArrivalsClient.Arrival next =
+            result.status == ArrivalsClient.STATUS_OK ? result.findLine(job.lineId, 1) : null;
+        job.nextMinutes = next == null ? -1 : (next.arriving ? 0 : next.minutes);
+        job.nextArriving = next != null && next.arriving;
 
         if (arrival != null) {
             int minutes = arrival.arriving ? 0 : arrival.minutes;
@@ -1148,22 +1174,40 @@ public class BusTrackingService extends Service {
                 return registerBusPassed(job, slot);
             }
 
+            job.lastMinutes = minutes;
+
+            // El autobus que se sigue: el primero, o el de detras mientras quede
+            // uno por dejar pasar. La deteccion de arriba va siempre con el
+            // primero; lo que se ensena y lo que vibra, con este.
+            int followed = job.skip > 0 ? job.nextMinutes : minutes;
+
             // Vibracion corta al entrar en los 3 minutos, una sola vez por
             // autobus: repetirla en cada consulta seria un zumbido cada 15 s.
-            if (vibrateOnApproach && !job.warnedAt3 && minutes <= VIBRATION_THRESHOLD_MINUTES) {
+            if (vibrateOnApproach && !job.warnedAt3 && followed >= 0
+                && followed <= VIBRATION_THRESHOLD_MINUTES) {
                 job.warnedAt3 = true;
                 vibrateShort();
             }
 
-            job.lastMinutes = minutes;
-
             // Por donde viene, con la misma deteccion que "ver por donde viene".
-            sweepRoute(job, minutes, cycle);
+            // Solo con el primero: el barrido encuentra el autobus mas adelantado,
+            // y con el segundo diria donde esta el que se deja pasar.
+            if (job.skip > 0) {
+                job.stopsAway = -1;
+            } else {
+                sweepRoute(job, minutes, cycle);
+            }
 
             String where = job.whereText(System.currentTimeMillis());
-            String title = minutes <= 0
-                ? "Línea " + job.lineId + " · Llegando"
-                : "Línea " + job.lineId + " · En " + minutes + " min";
+            String title = job.skip > 0
+                ? followed < 0
+                    ? "Línea " + job.lineId + " · 2º bus sin estimación"
+                    : followed <= 0
+                        ? "Línea " + job.lineId + " · 2º bus llegando"
+                        : "Línea " + job.lineId + " · 2º bus en " + followed + " min"
+                : minutes <= 0
+                    ? "Línea " + job.lineId + " · Llegando"
+                    : "Línea " + job.lineId + " · En " + minutes + " min";
 
             // A continuacion del tiempo: los minutos dicen cuando llega y las
             // paradas dicen si ese numero se puede creer.
@@ -1386,6 +1430,21 @@ public class BusTrackingService extends Service {
      *     aviso se ha retirado de la lista.
      */
     private boolean registerBusPassed(Job job, int slot) {
+        // El que ha pasado era el que se dejaba pasar: el seguido pasa a ser el
+        // primero y a partir de aqui todo es como en un aviso normal. No suma a
+        // busesSeen ni reinicia la vibracion, que ya iba por el seguido.
+        if (job.skip > 0) {
+            job.skip -= 1;
+            job.armed = false;
+            job.lastMinutes = -1;
+            job.missingStreak = 0;
+            job.stopsAway = -1;
+            job.stopsAwayAt = 0L;
+            job.routeSweptAt = 0L;
+            notifyPassed(job);
+            return false;
+        }
+
         job.busesSeen += 1;
         job.armed = false;
         job.lastMinutes = -1;
@@ -1540,14 +1599,14 @@ public class BusTrackingService extends Service {
             int stopsAway = job.hasFreshFix(System.currentTimeMillis()) ? job.stopsAway : -1;
             plugin.emitArrivalUpdate(
                 job.id, job.stopId, job.lineId, minutes, arriving, status, job.busesSeen, finished,
-                stopsAway);
+                stopsAway, job.nextMinutes, job.nextArriving, job.skip);
         }
     }
 
     private void notifyPassed(Job job) {
         BusTrackingPlugin plugin = listener;
         if (plugin != null) {
-            plugin.emitBusPassed(job.id, job.stopId, job.lineId, job.busesSeen, targetBuses);
+            plugin.emitBusPassed(job.id, job.stopId, job.lineId, job.busesSeen, targetBuses, job.skip);
         }
     }
 

@@ -93,6 +93,7 @@ import {
   stopName,
   TOUR_STEPS,
   trackingDirectionOptions,
+  trackingArrival,
   trackingStopsAway,
 } from './views'
 
@@ -170,6 +171,11 @@ interface TrackingUpdate {
    * por eso el "no se sabe" es -1 y no 0.
    */
   stopsAway: number
+  /** El autobús de detrás, -1 si no consta. Versiones antiguas del servicio no lo mandan. */
+  nextMinutes?: number
+  nextArriving?: boolean
+  /** Autobuses que al servicio le quedan por dejar pasar. */
+  skip?: number
   at: number
 }
 
@@ -179,6 +185,8 @@ interface BusPassedUpdate {
   lineId: string
   busesSeen: number
   target: number
+  /** Autobuses que aún quedan por dejar pasar tras este paso. */
+  skip?: number
   at: number
 }
 
@@ -196,6 +204,8 @@ interface TrackingJobPayload {
    * renueva desde "Siguiente bus", para no tener que volver a preguntarlo.
    */
   directionKey: string
+  /** 1 si hay que dejar pasar el próximo autobús y seguir al de detrás. */
+  skip: number
 }
 
 /** Un aviso que se vuelve a crear con el botón "Siguiente bus" de su notificación final. */
@@ -1528,6 +1538,7 @@ async function syncTrackingService(): Promise<void> {
         // el autobús encima: la más cercana que lo tenga es donde está.
         routeStops: trackingRouteStops(job),
         directionKey: job.directionKey ?? '',
+        skip: job.skip,
       })),
       monitors: monitors.map((monitor) => ({
         id: monitor.id,
@@ -1686,6 +1697,7 @@ async function createTracking(
   stopId: string,
   lineId: string,
   directionKey?: string,
+  skip = 0,
 ): Promise<void> {
   const id = `${stopId}|${lineId}`
 
@@ -1694,7 +1706,7 @@ async function createTracking(
     return
   }
 
-  const job = newTrackingJob(stopId, lineId, directionKey)
+  const job = newTrackingJob(stopId, lineId, directionKey, skip)
   state.trackings = [...state.trackings, job]
 
   // El recién creado es el que interesa: si con él se pasa del tope de avisos
@@ -1705,7 +1717,9 @@ async function createTracking(
   log(
     'info',
     'aviso',
-    `Aviso creado: línea ${lineId} en ${job.stopName} (${trackingBusTarget()} autobús/es).`,
+    `Aviso creado: línea ${lineId} en ${job.stopName} (${trackingBusTarget()} autobús/es${
+      job.skip > 0 ? ', desde el segundo' : ''
+    }).`,
   )
 
   if (turnedOff.length > 0) {
@@ -1716,7 +1730,7 @@ async function createTracking(
   await refreshOneStop(stopId)
 }
 
-function newTrackingJob(stopId: string, lineId: string, directionKey?: string): TrackingJob {
+function newTrackingJob(stopId: string, lineId: string, directionKey?: string, skip = 0): TrackingJob {
   return {
     id: `${stopId}|${lineId}`,
     stopId,
@@ -1730,6 +1744,7 @@ function newTrackingJob(stopId: string, lineId: string, directionKey?: string): 
     armed: false,
     missingStreak: 0,
     busesSeen: 0,
+    skip: skip > 0 ? 1 : 0,
     warnedAt3: false,
   }
 }
@@ -1766,6 +1781,8 @@ async function renewTracking(renewed: RenewedJob, sync = true): Promise<void> {
     // Pulsado dos veces, o reentregado por el sistema: se reinicia la cuenta.
     job.active = true
     job.busesSeen = 0
+    // "Siguiente bus" es el que viene ahora, aunque el aviso fuera del segundo.
+    job.skip = 0
     job.armed = false
     job.lastMinutes = null
     job.missingStreak = 0
@@ -1887,11 +1904,28 @@ async function restoreTrackingService(): Promise<void> {
         observedAt: update.at,
       }
 
+      // El de detrás también: es el que enseña un aviso que sigue al segundo.
+      const next = typeof update.nextMinutes === 'number' && update.nextMinutes >= 0 && update.minutes >= 0
+        ? [{
+            ...arrival,
+            minutesUntil: update.nextMinutes,
+            status: update.nextArriving ? ('arriving' as const) : ('scheduled' as const),
+            estimatedClock: new Date(update.at + update.nextMinutes * 60_000).toLocaleTimeString('es-ES', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          }]
+        : []
+
       state.feeds[update.stopId] = {
         stopId: update.stopId,
         stopName: existing?.stopName ?? null,
         status: update.status,
-        arrivals: [arrival, ...(existing?.arrivals ?? []).filter((item) => item.lineId !== update.lineId)],
+        arrivals: [
+          arrival,
+          ...next,
+          ...(existing?.arrivals ?? []).filter((item) => item.lineId !== update.lineId),
+        ],
         fetchedAt: update.at,
         message: null,
       }
@@ -1901,6 +1935,9 @@ async function restoreTrackingService(): Promise<void> {
       const job = trackingById(update.jobId)
       if (job) {
         job.busesSeen = update.busesSeen
+        if (typeof update.skip === 'number') {
+          job.skip = Math.min(job.skip, update.skip)
+        }
         persistTrackings()
       }
 
@@ -1992,6 +2029,20 @@ async function restoreTrackingService(): Promise<void> {
     await BusTracking.addListener('busPassed', (update) => {
       const job = trackingById(update.jobId)
       if (!job) {
+        return
+      }
+
+      // Ha pasado el que se dejaba pasar: no cuenta, y la vibración ya iba por
+      // el que se sigue, así que no se reinicia.
+      if (typeof update.skip === 'number' && update.skip < job.skip) {
+        job.skip = update.skip
+        job.armed = false
+        job.lastMinutes = null
+        job.missingStreak = 0
+        persistTrackings()
+        log('info', 'aviso', `Ha pasado el primer autobús de la línea ${update.lineId}; ahora se sigue el tuyo.`)
+        showToast('Ya ha pasado el primero: ahora viene el tuyo', 'info')
+        render()
         return
       }
 
@@ -2110,10 +2161,15 @@ function evaluateTrackingJob(job: TrackingJob, feed: StopFeed): void {
     return
   }
 
+  // Los pasos se detectan con el primero; lo que se enseña y lo que vibra es el
+  // que se sigue, que mientras quede uno por dejar pasar es el de detrás.
+  const followed = job.skip > 0 ? trackingArrival(job) : arrival
+  const followedMinutes = followed ? liveMinutes(followed) : null
+
   // Vibración de los 3 minutos. Con el servicio nativo vivo la da él, que
   // también funciona con la app en segundo plano; esto es el respaldo para
   // cuando no lo hay (navegador, o servicio no disponible).
-  if (!job.warnedAt3 && minutes <= TRACKING_WARN_MINUTES) {
+  if (!job.warnedAt3 && followedMinutes !== null && followedMinutes <= TRACKING_WARN_MINUTES) {
     job.warnedAt3 = true
     if (!trackingServiceActive) {
       vibrateShort()
@@ -2130,10 +2186,10 @@ function evaluateTrackingJob(job: TrackingJob, feed: StopFeed): void {
   if (isNative() && !trackingServiceActive && !document.hidden) {
     void showTrackingNotification({
       id: notificationId(job.id),
-      lineId: job.lineId,
+      lineId: job.skip > 0 ? `${job.lineId} · 2º bus` : job.lineId,
       destination: describeArrival(job.stopId, job.lineId),
-      minutes,
-      arriving: arrival.status === 'arriving' || minutes <= 0,
+      minutes: followedMinutes,
+      arriving: followed !== null && (followed.status === 'arriving' || (followedMinutes ?? 1) <= 0),
       updatedAt: new Date(feed.fetchedAt),
       stale: feed.status === 'throttled',
       stopsAway: describeStopsAway(trackingStopsAway(job)),
@@ -2177,6 +2233,21 @@ function vibrateShort(): void {
  * trackingBusTarget(); hasta entonces se rearma y sigue con el siguiente.
  */
 async function registerBusPassed(job: TrackingJob): Promise<void> {
+  // El que ha pasado era el que se dejaba pasar: no cuenta. Desde aquí el que se
+  // sigue es el primero y el aviso sigue como uno normal; la vibración ya iba
+  // por él, así que no se reinicia.
+  if (job.skip > 0) {
+    job.skip -= 1
+    job.armed = false
+    job.lastMinutes = null
+    job.missingStreak = 0
+    persistTrackings()
+    log('info', 'aviso', `Ha pasado el primer autobús de la línea ${job.lineId}; ahora se sigue el tuyo.`)
+    showToast('Ya ha pasado el primero: ahora viene el tuyo', 'info')
+    render()
+    return
+  }
+
   job.busesSeen += 1
   job.armed = false
   job.lastMinutes = null
@@ -2693,6 +2764,10 @@ appRoot.addEventListener('change', (event) => {
 
   if (action === 'draft-direction') {
     state.draft.directionKey = target.value
+  }
+
+  if (action === 'draft-skip') {
+    state.draft.skip = target.value === '1' ? 1 : 0
   }
 
   if (action === 'info-line') {
@@ -3269,6 +3344,7 @@ function openPickLine(stopId: string, purpose: 'tracking' | 'monitor'): void {
   const lines = state.network?.getLinesForStop(stopId) ?? []
   state.draft.lineId = lines[0]?.lineId ?? ''
   state.draft.directionKey = defaultDirectionKey(stopId, state.draft.lineId, purpose)
+  state.draft.skip = 0
   state.sheet = { kind: 'pick-line', stopId, purpose }
   render()
 }
@@ -3318,7 +3394,7 @@ async function confirmSheet(
     render()
     // El sentido solo se ha preguntado cuando por la parada pasaban varios; si
     // no, el borrador trae el único posible y da igual pasarlo.
-    await createTracking(stopId, lineId, state.draft.directionKey)
+    await createTracking(stopId, lineId, state.draft.directionKey, state.draft.skip)
     state.tab = 'seguimiento'
     persistTab()
     showToast('Te avisaremos cuando se acerque', 'success')

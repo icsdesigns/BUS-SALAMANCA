@@ -184,6 +184,22 @@ export function locateBusInWindow(window: NetworkStop[], lineId: string): number
 }
 
 /**
+ * El autobus que sigue un aviso: el proximo de la linea o, si hay que dejar
+ * pasar uno, el que viene detras. `null` si la fuente no lo publica.
+ */
+export function trackingArrival(job: TrackingJob): Arrival | null {
+  const line = (feedOf(job.stopId)?.arrivals ?? [])
+    .filter((item) => item.lineId === job.lineId)
+    .sort((left, right) => liveMinutes(left) - liveMinutes(right))
+  return line[job.skip] ?? null
+}
+
+/** "2º autobús · " mientras el aviso deja pasar el primero; vacío si no. */
+function skipLabel(job: TrackingJob): string {
+  return job.skip > 0 ? '2º autobús · ' : ''
+}
+
+/**
  * A cuantas paradas viene el autobus de un aviso.
  *
  * `null` cuando no se puede afirmar: el aviso no tiene sentido resuelto (por su
@@ -193,6 +209,12 @@ export function locateBusInWindow(window: NetworkStop[], lineId: string): number
  * mirar a la calle equivocada.
  */
 export function trackingStopsAway(job: TrackingJob): number | null {
+  // El que se deja pasar es el más adelantado, y es a ese al que encuentra la
+  // búsqueda: contar paradas diría dónde está el autobús que NO se sigue.
+  if (job.skip > 0) {
+    return null
+  }
+
   // Con la app cerrada quien mira las paradas anteriores es el servicio nativo,
   // así que al volver a abrirla su recuento es más nuevo que cualquier cosa que
   // se pueda deducir aquí. Se descarta en cuanto envejece: un autobús en marcha
@@ -569,14 +591,13 @@ function renderFavourites(): string {
  * se queda enseñando una hora que dejó de ser verdad.
  */
 function renderTrackingBanner(tracking: TrackingJob): string {
-  const feed = feedOf(tracking.stopId)
-  const arrival = feed?.arrivals.find((item) => item.lineId === tracking.lineId) ?? null
+  const arrival = trackingArrival(tracking)
   const target = trackingBusTarget()
 
   // Con un solo autobus por aviso el contador no dice nada: sobra.
-  const progress = target > 1
+  const progress = skipLabel(tracking) + (target > 1
     ? `Autobús ${Math.min(tracking.busesSeen + 1, target)} de ${target} · `
-    : ''
+    : '')
 
   // Dónde viene el autobús, con la misma detección que dibuja el recorrido.
   // Solo mientras el aviso trabaja: en pausa nadie está mirando las paradas
@@ -667,12 +688,11 @@ function renderTrackingHead(
  * dos, y encima competían por el único turno disponible en la cola de consultas.
  */
 function renderTrackingCard(tracking: TrackingJob): string {
-  const feed = feedOf(tracking.stopId)
-  const arrival = feed?.arrivals.find((item) => item.lineId === tracking.lineId) ?? null
+  const arrival = trackingArrival(tracking)
   const target = trackingBusTarget()
-  const progress = target > 1
+  const progress = skipLabel(tracking) + (target > 1
     ? `Autobús ${Math.min(tracking.busesSeen + 1, target)} de ${target} · `
-    : ''
+    : '')
   const stopsAway = tracking.active ? describeStopsAway(trackingStopsAway(tracking)) : ''
 
   return `
@@ -686,7 +706,9 @@ function renderTrackingCard(tracking: TrackingJob): string {
           // sustituyen por la única frase que sí informa, que es por qué está
           // vacío y cómo se llena.
           tracking.active
-            ? renderTrackingRoute(tracking)
+            ? (tracking.skip > 0
+                ? '<p class="text-tiny">Sigues al segundo autobús: el que se ve en el recorrido es el primero, que dejarás pasar.</p>'
+                : '') + renderTrackingRoute(tracking)
             : '<p class="text-tiny">En pausa: no consulta ni avisa. Reanúdalo para ver por dónde viene; solo un aviso se mantiene actualizado a la vez.</p>'
         }
       </div>
@@ -3554,6 +3576,22 @@ function renderPickLineSheet(stopId: string, purpose: 'tracking' | 'monitor'): s
             : ''
       }
     `
+    }
+
+    ${
+      // Qué autobús: el próximo, o el de detrás para quien ya sabe que no llega
+      // al primero. Con el segundo el aviso deja pasar uno y sigue al otro.
+      purpose === 'tracking'
+        ? `
+      <label class="field">
+        <span>Qué autobús</span>
+        <select class="select" data-action="draft-skip">
+          <option value="0" ${state.draft.skip === 1 ? '' : 'selected'}>El próximo</option>
+          <option value="1" ${state.draft.skip === 1 ? 'selected' : ''}>El segundo (dejar pasar el próximo)</option>
+        </select>
+      </label>
+    `
+        : ''
     }
 
     ${

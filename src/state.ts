@@ -96,6 +96,15 @@ export interface TrackingJob {
   /** Autobuses ya vistos pasar; el aviso termina al llegar a TRACKING_BUS_TARGET. */
   busesSeen: number
   /**
+   * Autobuses que dejar pasar antes del que se sigue: 0 es el proximo, 1 el que
+   * viene detras (para quien sabe que no llega al primero).
+   *
+   * Los pasos se siguen detectando con el primero, que es el unico que la
+   * fuente pone a cero minutos. Cada paso mientras quede alguno por dejar pasar
+   * solo descuenta —no suma a busesSeen—, y desde ahi el aviso es uno normal.
+   */
+  skip: number
+  /**
    * El aviso corto (vibracion) de "quedan 3 minutos" ya se ha dado para el
    * autobus que se espera ahora. Se reinicia con cada autobus que pasa, de modo
    * que vibra una vez por autobus y no una vez por consulta.
@@ -414,6 +423,8 @@ export interface AppState {
   draft: {
     lineId: string
     directionKey: string
+    /** Aviso nuevo: 0 sigue al proximo autobus, 1 al segundo. */
+    skip: number
     startMinutes: number
     endMinutes: number
     alias: string
@@ -669,6 +680,7 @@ function readTrackings(): TrackingJob[] {
       // es cuando la red ya esta cargada.
       directionKey: typeof job.directionKey === 'string' ? job.directionKey : null,
       busesSeen: typeof job.busesSeen === 'number' ? job.busesSeen : 0,
+      skip: job.skip === 1 ? 1 : 0,
       warnedAt3: job.warnedAt3 === true,
       // Un aviso guardado con el formato antiguo estaba activo por definicion.
       active: job.active !== false,
@@ -749,6 +761,7 @@ export const state: AppState = {
   draft: {
     lineId: '',
     directionKey: '',
+    skip: 0,
     startMinutes: 7 * 60,
     endMinutes: 8 * 60,
     alias: '',

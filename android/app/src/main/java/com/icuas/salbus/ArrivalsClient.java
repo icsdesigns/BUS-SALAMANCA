@@ -87,6 +87,25 @@ final class ArrivalsClient {
             }
             return best;
         }
+
+        /**
+         * El autobus numero {@code index} de la linea, contando desde cero y en
+         * orden de llegada: 0 es el proximo, 1 el que viene detras. {@code null}
+         * si la fuente no publica tantos.
+         */
+        Arrival findLine(String lineId, int index) {
+            if (index <= 0) {
+                return findLine(lineId);
+            }
+            List<Arrival> line = new ArrayList<>();
+            for (Arrival arrival : arrivals) {
+                if (arrival.lineId.equals(lineId)) {
+                    line.add(arrival);
+                }
+            }
+            java.util.Collections.sort(line, (left, right) -> Integer.compare(left.minutes, right.minutes));
+            return index < line.size() ? line.get(index) : null;
+        }
     }
 
     static Result fetch(String stopId) {

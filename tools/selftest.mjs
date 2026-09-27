@@ -1730,7 +1730,7 @@ async function main() {
       check('lo elegido a mano manda sobre la deducción',
         mainSource.includes('if (chosen && options.some((direction) => direction.key === chosen))'))
       check('el sentido elegido llega hasta el aviso',
-        mainSource.includes('await createTracking(stopId, lineId, state.draft.directionKey)'))
+        mainSource.includes('await createTracking(stopId, lineId, state.draft.directionKey, state.draft.skip)'))
       check('el desplegable abre con una opción que sí está en la lista',
         mainSource.includes('function defaultDirectionKey(')
           && !mainSource.includes("state.network?.getDirectionsThroughStop(stopId, state.draft.lineId)[0]?.key ?? ''"))
@@ -1739,6 +1739,30 @@ async function main() {
       check('un trayecto parcial no cuenta como otro sentido',
         viewsSource.includes('const complete = through.filter((direction) => !direction.partial)')
           && viewsSource.includes('return complete.length > 0 ? complete : through'))
+
+      // Seguir al segundo autobus: se elige al crear el aviso, los pasos se
+      // siguen detectando con el primero y el que pasa primero solo descuenta.
+      {
+        const serviceSource = await fs.readFile(path.join(projectRoot, 'android', 'app', 'src', 'main', 'java',
+          'com', 'icuas', 'salbus', 'BusTrackingService.java'), 'utf8')
+        const pluginSource = await fs.readFile(path.join(projectRoot, 'android', 'app', 'src', 'main', 'java',
+          'com', 'icuas', 'salbus', 'BusTrackingPlugin.java'), 'utf8')
+        check('al crear el aviso se puede elegir el segundo autobús',
+          viewsSource.includes('data-action="draft-skip"') && mainSource.includes("if (action === 'draft-skip')"))
+        check('la tarjeta enseña el autobús que se sigue, no el primero',
+          viewsSource.includes('return line[job.skip] ?? null')
+            && !viewsSource.includes('feed?.arrivals.find((item) => item.lineId === tracking.lineId)'))
+        check('el primero que pasa solo descuenta, en la web y en el servicio',
+          mainSource.includes('if (job.skip > 0) {\n    job.skip -= 1')
+            && serviceSource.includes('if (job.skip > 0) {\n            job.skip -= 1;'))
+        check('el servicio recibe y devuelve cuántos autobuses dejar pasar',
+          pluginSource.includes('String.valueOf(job.optInt("skip", 0))')
+            && serviceSource.includes('job.skip = Math.min(1, Math.max(0, parseInt(parts, 8)));')
+            && pluginSource.includes('payload.put("skip", skip);'))
+        check('«Siguiente bus» vuelve a seguir al próximo',
+          serviceSource.includes('String.join(",", job.route), job.directionKey, "0");')
+            && mainSource.includes('    job.skip = 0\n'))
+      }
 
       check('los avisos ya guardados reciben su sentido al arrancar',
         mainSource.includes('function backfillTrackingDirections()')
