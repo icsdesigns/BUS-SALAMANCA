@@ -1433,8 +1433,8 @@ function renderFavouriteCard(stopId: string): string {
         data-stop="${esc(stopId)}"
         aria-expanded="${expanded}"
       >
-        <span class="stop-code">${esc(stopId)}</span>
         <span class="stop-name">${esc(label)}</span>
+        <span class="sr-only">, parada ${esc(stopId)}</span>
         <span class="stop-chevron">${icon('chevron')}</span>
       </button>
 
@@ -1471,7 +1471,17 @@ function renderFavouriteCard(stopId: string): string {
         <div class="stop-body-inner">
           <div class="card-divider"></div>
           <div class="card-body">
-            ${official ? `<p class="stop-official">Nombre oficial: ${esc(official)}</p>` : ''}
+            ${
+              official
+                ? `<div class="stop-official">
+                    ${icon('pin')}
+                    <p>
+                      <span class="stop-official-label">Nombre oficial</span>
+                      <span class="stop-official-name">${esc(official)}</span>
+                    </p>
+                  </div>`
+                : ''
+            }
 
             <div class="stop-status">
               ${feedPill(feed)}
@@ -1501,8 +1511,8 @@ function renderFavouriteCard(stopId: string): string {
  * fila que la franja —de alto fijo— recortaba en silencio. Justo lo que este
  * número existe para impedir.
  *
- * Doce es lo que entra en las dos filas fijas a 320 px, la pantalla más estrecha
- * que se contempla (a 360 px caben catorce, y sobra sitio). La parada con más
+ * Doce son, como mucho, dos filas y media a 320 px, la pantalla más estrecha
+ * que se contempla. La parada con más
  * líneas de toda la red tiene trece y solo tres pasan de nueve, así que el "+N"
  * aparece en una sola parada de las 349.
  *
@@ -1517,14 +1527,10 @@ const STOP_LINES_SLOTS = 12
 /**
  * La franja de líneas de una parada.
  *
- * Alto FIJO de dos filas, siempre, tenga la parada una línea o trece. Es la
- * mitad de "todas las tarjetas miden lo mismo": con el alto pegado al contenido,
- * la lista de paradas guardadas subía y bajaba de escalón en escalón según
- * cuántas líneas tuviera cada una, y la vista era un serrucho.
- *
- * Y es un alto que NO recorta, que es la otra mitad: doce distintivos entran en
- * esas dos filas, y lo que pasara de ahí se cuenta con un "+N" que lleva en su
- * `title` las líneas que resume.
+ * Empieza por el número de parada y sigue con los distintivos. Crece con el
+ * contenido —una fila casi siempre, dos en las pocas paradas con muchas líneas—
+ * y NO recorta: lo que pasara de `STOP_LINES_SLOTS` se cuenta con un "+N" que
+ * lleva en su `title` las líneas que resume.
  *
  * Es un botón, y no un bloque, porque ocupa el ancho entero justo debajo del
  * nombre: tocar ahí y que no pase nada se lee como un fallo. Despliega la
@@ -1532,11 +1538,16 @@ const STOP_LINES_SLOTS = 12
  * (`tabindex="-1"`) para no obligar a pasar dos veces por el mismo destino.
  */
 function renderStopLines(stopId: string, lines: TransitLine[]): string {
+  // El número de parada abre la franja: es un dato de consulta, no un título,
+  // y aquí le deja al nombre el ancho entero de la cabecera.
+  const code = `<span class="stop-code">${esc(stopId)}</span>`
+
   if (lines.length === 0) {
     return `
       <button class="stop-lines" type="button" data-action="expand-stop" data-stop="${esc(
         stopId,
       )}" tabindex="-1" aria-hidden="true">
+        ${code}
         <span class="stop-lines-empty">Sin líneas registradas</span>
       </button>
     `
@@ -1553,6 +1564,7 @@ function renderStopLines(stopId: string, lines: TransitLine[]): string {
     <button class="stop-lines" type="button" data-action="expand-stop" data-stop="${esc(
       stopId,
     )}" tabindex="-1" aria-hidden="true">
+      ${code}
       ${visible.map((line) => lineChip(line.lineId, line.color, 'sm')).join('')}
       ${
         hidden.length > 0

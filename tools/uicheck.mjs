@@ -147,7 +147,7 @@ async function main() {
       //   350 · el nombre mas largo de la red ("C/ Licenciado Vidriera, s/n
       //         (Frente residencia)", 47 caracteres). Solo se distingue de la
       //         344 por el final, asi que dice si se estan recortando nombres.
-      //   344 · renombrada a mano: comprueba que el alias no cambia el tamano
+      //   344 · renombrada a mano: comprueba el nombre oficial dentro de la tarjeta
       //         de la tarjeta.
       //    41 · la parada con mas lineas de la red (trece): comprueba la franja
       //         de distintivos y el "+N".
@@ -317,7 +317,7 @@ async function main() {
     }
 
     if (checkStability) {
-      console.log('\nTarjetas de parada (Inicio): mismo tamano, sin cortes, sin parpadeos')
+      console.log('\nTarjetas de parada (Inicio): compactas, sin cortes, sin parpadeos')
 
       await cdp.evaluate(`document.querySelector('[data-action="tab"][data-tab="inicio"]')?.click(); true`)
       await delay(700)
@@ -351,7 +351,10 @@ async function main() {
       const alturas = [...new Set(cards.map((card) => card.alto))]
       const vw = Number(await cdp.evaluate('document.documentElement.clientWidth'))
 
-      report('todas las tarjetas plegadas miden lo mismo', cards.length > 1 && alturas.length === 1,
+      // Ya no se reserva hueco para el peor caso: cada tarjeta mide lo que ocupa.
+      // El techo es el de la parada más cargada de la red (dos renglones de
+      // nombre y dos filas de líneas) con algo de margen.
+      report('las tarjetas plegadas son compactas', cards.length > 1 && Math.max(...alturas) <= 130,
         `${cards.length} tarjetas · alturas ${alturas.join(', ')} px`)
       report('ningun nombre de parada se corta',
         cards.every((card) => !card.nombreCortado && !card.nombreAncho))
