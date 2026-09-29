@@ -3039,50 +3039,31 @@ button.card-head {
 
 
 /* ==================================================================
-   Franja de líneas de una parada guardada
-   ==================================================================
-   Dos problemas a la vez: enseñar TODAS las líneas de la parada sin
-   cortes, y que todas las tarjetas plegadas midan lo mismo.
-
-   En la cabecera no cabían: entre el código, el nombre y los botones
-   quedaban unos 90 px, y trece distintivos ahí solo salían cortados.
-   Por eso bajan a una franja de ancho completo, y por eso esa franja
-   tiene ALTURA FIJA de dos filas aunque sobre sitio: con la altura
-   pegada al contenido, la lista subía y bajaba de escalón en escalón
-   según cuántas líneas tuviera cada parada. */
-
-/* ==================================================================
    Tarjeta de parada guardada (Inicio)
    ==================================================================
 
-   Dos reglas mandan sobre todo lo demás, y tiran la una de la otra:
+   Compacta: dos renglones y nada más.
 
-     1. TODAS las tarjetas plegadas miden EXACTAMENTE lo mismo. Con la
-        altura pegada al contenido, la lista subía y bajaba de escalón
-        en escalón —un nombre largo aquí, siete líneas allá— y recorrer
-        cinco paradas era leer un serrucho.
-     2. NADA se recorta. Ni el nombre, que es lo que dice a qué acera
-        hay que bajar, ni las líneas, que son lo que dice si esa parada
-        sirve para el viaje de hoy.
+     · Arriba, el nombre y el galón. El nombre tiene el ancho ENTERO de
+       la tarjeta, que es lo que evita que se parta: con el código al
+       lado perdía 50 px, y casi todos los nombres largos pasaban a dos
+       renglones.
+     · Abajo, en una sola franja, el número de parada, las líneas y los
+       botones de administrar.
 
-   Se cumplen las dos reservando hueco para el PEOR caso real, no para
-   el caso medio:
+   Antes cada tarjeta reservaba hueco para el PEOR caso —dos renglones
+   de nombre y dos filas de líneas— para que todas midieran igual. Pero
+   el peor caso es una parada de 349, así que las demás cargaban con
+   unos 45 px vacíos cada una. Ahora la tarjeta mide lo que ocupa: casi
+   todas quedan iguales (un renglón y una fila), y la que necesita más
+   crece sin recortar nada.
 
-     · Nombre: dos renglones. El nombre más largo de la red son 47
-       caracteres ("C/ Licenciado Vidriera, s/n (Frente residencia)") y
-       el alias que se puede escribir a mano está limitado a 40, así que
-       dos renglones sobran a 360 px.
-     · Líneas: dos filas. Ahí entran doce distintivos; la parada con más
-       líneas de la red tiene trece, y esa decimotercera se cuenta con un
-       "+1" en vez de esconderse.
-     · El nombre oficial de una parada renombrada NO va en la cabecera:
-       se usa para comprobar cuál es, y comprobarlo se hace al abrirla.
-       Arriba obligaba a reservarle sitio en las cinco tarjetas para
-       usarlo en una.
+   El nombre oficial de una parada renombrada NO va en la cabecera: se
+   usa para comprobar cuál es, y comprobarlo se hace al abrirla.
 
-   La estructura es siempre la misma —cabecera, franja de líneas y
-   cuerpo— y desplegar solo cambia una clase. Es lo que quita los
-   parpadeos: ningún nodo nace ni muere a mitad de la transición. */
+   La estructura es siempre la misma —cabecera, franja y cuerpo— y
+   desplegar solo cambia una clase. Es lo que quita los parpadeos:
+   ningún nodo nace ni muere a mitad de la transición. */
 
 .stop-card {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -3093,16 +3074,14 @@ button.card-head {
   box-shadow: var(--shadow-2);
 }
 
-/* Cabecera: código, nombre y galón. Ocupa el ancho entero porque el
-   nombre necesita ese ancho; los botones de administrar bajan a la
-   franja de abajo, donde sobra sitio a la derecha de los distintivos. */
+/* Cabecera: nombre y galón, a todo el ancho. */
 .stop-open {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  padding: 13px 14px 9px;
+  padding: 11px 14px 5px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -3110,13 +3089,10 @@ button.card-head {
   cursor: pointer;
 }
 
-/* Dos renglones reservados, y sin recorte de ninguna clase: un nombre
-   que necesitara un tercero se leería entero antes que dejar a nadie
-   plantado en la acera de enfrente. Con los datos actuales no ocurre. */
+/* Sin recorte de ninguna clase: "C/ Licenciado Vidriera, s/n (Frente
+   residencia)" y "…(Junto Residencia)" solo se distinguen por el final,
+   y son aceras distintas. Si no cabe en un renglón, ocupa dos. */
 .stop-name {
-  display: flex;
-  align-items: center;
-  min-height: 2.6em;
   font-size: 15px;
   font-weight: 700;
   line-height: 1.3;
@@ -3141,33 +3117,44 @@ button.card-head {
   color: var(--brand-500);
 }
 
-/* Franja de líneas y botones de administrar, en la misma banda. */
+/* Franja: número, líneas y botones de administrar, en la misma banda. */
 .stop-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 0 12px 12px;
+  padding: 0 12px 10px 14px;
 }
 
-/* Alto FIJO de dos filas: 2 × 22 px de distintivo + 5 de hueco. El
-   `overflow` es una red de seguridad que con los datos actuales nunca
-   llega a actuar, porque el "+N" de `renderStopLines` recorta la lista
-   antes de que sobre nada. */
+/* Alto pegado al contenido: una fila casi siempre, dos en las pocas
+   paradas con muchas líneas. Nunca recorta; lo que no cabe en los
+   huecos de `STOP_LINES_SLOTS` se cuenta con un "+N". */
 .stop-lines {
   display: flex;
   flex-wrap: wrap;
-  align-content: center;
+  align-items: center;
   gap: 5px;
-  height: 49px;
   min-width: 0;
+  min-height: 30px;
   padding: 0;
   border: 0;
   background: transparent;
   text-align: left;
   color: inherit;
   cursor: pointer;
-  overflow: hidden;
+}
+
+/* El número de parada, al tamaño de los distintivos y sin color de
+   línea: es una etiqueta, no una línea. El hueco extra lo separa de
+   ellas sin necesidad de un signo. */
+.stop-lines .stop-code {
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .stop-lines-empty {
@@ -3189,12 +3176,12 @@ button.card-head {
   flex: none;
 }
 
-/* Un punto más pequeños que los de las demás tarjetas: aquí hay cinco o
-   seis tarjetas en pantalla y administrar una parada no es lo que se
-   viene a hacer, sino lo que se hace de vez en cuando. */
+/* Más pequeños que los de las demás tarjetas: aquí hay cinco o seis
+   tarjetas en pantalla y administrar una parada no es lo que se viene a
+   hacer, sino lo que se hace de vez en cuando. */
 .stop-tools .mini-btn {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
 }
 
 /* El despliegue -----------------------------------------------------
@@ -3255,12 +3242,53 @@ button.card-head {
   gap: 10px;
 }
 
+/* Aire entre la raya y lo primero del cuerpo: sin él, el nombre oficial
+   (o el estado, si no lo hay) quedaba pegado a la raya. */
+.stop-card .card-body {
+  padding-top: 14px;
+}
+
 /* El nombre oficial de una parada renombrada. Vive aquí dentro porque
-   sirve para comprobar cuál es, y eso se comprueba al abrirla. */
-p.stop-official {
-  font-size: 12px;
-  line-height: 1.35;
+   sirve para comprobar cuál es, y eso se comprueba al abrirla. Va en su
+   propia placa, con la chincheta y la etiqueta encima, para que se lea
+   como un dato de la parada y no como una línea suelta de letra pequeña. */
+.stop-official {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.stop-official > svg {
+  width: 18px;
+  height: 18px;
   color: var(--text-3);
+}
+
+.stop-official p {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.stop-official-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.stop-official-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-2);
   overflow-wrap: anywhere;
 }
 
