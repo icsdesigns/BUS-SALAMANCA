@@ -97,6 +97,12 @@ final class ArrivalsClient {
             if (index <= 0) {
                 return findLine(lineId);
             }
+            List<Arrival> line = lineArrivals(lineId);
+            return index < line.size() ? line.get(index) : null;
+        }
+
+        /** Todos los autobuses de la linea, en orden de llegada. */
+        List<Arrival> lineArrivals(String lineId) {
             List<Arrival> line = new ArrayList<>();
             for (Arrival arrival : arrivals) {
                 if (arrival.lineId.equals(lineId)) {
@@ -104,7 +110,7 @@ final class ArrivalsClient {
                 }
             }
             java.util.Collections.sort(line, (left, right) -> Integer.compare(left.minutes, right.minutes));
-            return index < line.size() ? line.get(index) : null;
+            return line;
         }
     }
 

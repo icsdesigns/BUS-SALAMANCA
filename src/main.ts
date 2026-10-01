@@ -49,7 +49,6 @@ import {
   TRACKING_INTERVAL_SECONDS,
   clearLogs,
   clearMonitorTrace,
-  enforceActiveLimit,
   formatMinutesClock,
   favouriteLabel,
   isFavourite,
@@ -73,7 +72,8 @@ import {
   trackingBusTarget,
   TRACKING_WARN_MINUTES,
   markTourSeen,
-  MAX_TRACKING_JOBS,
+  MAX_TRACKING_SKIP,
+  clampSkip,
   type MonitorJob,
   type RoutePoint,
   type InfoSection,
@@ -176,6 +176,12 @@ interface TrackingUpdate {
   nextArriving?: boolean
   /** Autobuses que al servicio le quedan por dejar pasar. */
   skip?: number
+  /**
+   * Todos los autobuses de la línea en la última consulta, en orden de llegada
+   * (-1 en minutos si no consta). Con "Saltar" se puede seguir al 3º o al 4º, y
+   * con solo el primero y el de detrás la pantalla no tendría su hora.
+   */
+  line?: { minutes: number, arriving: boolean }[]
   at: number
 }
 
@@ -204,7 +210,7 @@ interface TrackingJobPayload {
    * renueva desde "Siguiente bus", para no tener que volver a preguntarlo.
    */
   directionKey: string
-  /** 1 si hay que dejar pasar el próximo autobús y seguir al de detrás. */
+  /** Autobuses que dejar pasar antes del que se sigue (0 = el próximo). */
   skip: number
 }
 
@@ -249,6 +255,11 @@ interface BusTrackingPlugin {
     busTarget: number
   }): Promise<void>
   stop(): Promise<void>
+  /**
+   * "Saltar": el aviso deja de seguir al autobús que seguía y pasa al de detrás.
+   * Devuelve los autobuses que le quedan por dejar pasar según el servicio.
+   */
+  skip(options: { jobId: string }): Promise<{ skip?: number }>
   /** `stopped`: avisos que se detuvieron desde su notificacion, quiza sin la app abierta. */
   status(): Promise<{ running: boolean, stopped: string[] }>
   clearStopped(): Promise<void>
@@ -915,12 +926,7 @@ async function openWidgetStop(): Promise<void> {
     await goToTab('inicio')
   }
 
-  if (state.trackings.length >= MAX_TRACKING_JOBS) {
-    state.sheet = { kind: 'replace-job', stopId }
-    render()
-    return
-  }
-
+  // Si ya hay un aviso, el nuevo lo sustituirá al confirmar.
   openPickLine(stopId, 'tracking')
 }
 
@@ -1692,42 +1698,43 @@ function backfillTrackingDirections(): void {
   }
 }
 
-/** Crea un aviso nuevo. Los límites ya se han comprobado antes de llegar aquí. */
+/**
+ * Crea un aviso nuevo.
+ *
+ * Solo puede haber uno: si ya había otro (o el mismo, con otro autobús
+ * elegido) se retira primero, sin preguntar. Lo último que se pide es lo que se
+ * quiere mirar ahora.
+ */
 async function createTracking(
   stopId: string,
   lineId: string,
   directionKey?: string,
   skip = 0,
-): Promise<void> {
-  const id = `${stopId}|${lineId}`
+): Promise<boolean> {
+  const replaced = state.trackings.slice()
 
-  if (trackingById(id)) {
-    showToast('Ya tienes ese aviso creado', 'error')
-    return
+  // Se retiran ANTES de crear el nuevo y sincronizando con el servicio: con el
+  // mismo id (misma parada y línea) el servicio conservaría la cuenta del
+  // anterior en vez de empezar de cero.
+  for (const old of replaced) {
+    await removeTracking(old.id, false)
   }
 
   const job = newTrackingJob(stopId, lineId, directionKey, skip)
-  state.trackings = [...state.trackings, job]
-
-  // El recién creado es el que interesa: si con él se pasa del tope de avisos
-  // activos, se pausa el más antiguo.
-  const turnedOff = enforceActiveLimit(id)
+  state.trackings = [job]
   persistTrackings()
 
   log(
     'info',
     'aviso',
     `Aviso creado: línea ${lineId} en ${job.stopName} (${trackingBusTarget()} autobús/es${
-      job.skip > 0 ? ', desde el segundo' : ''
-    }).`,
+      job.skip > 0 ? `, desde el ${job.skip + 1}º` : ''
+    })${replaced.length > 0 ? `; sustituye al de la línea ${replaced[0].lineId} en ${replaced[0].stopName}` : ''}.`,
   )
-
-  if (turnedOff.length > 0) {
-    showToast('Se ha pausado el otro aviso: solo uno se mantiene actualizado a la vez', 'info')
-  }
 
   await syncTrackingService()
   await refreshOneStop(stopId)
+  return replaced.length > 0
 }
 
 function newTrackingJob(stopId: string, lineId: string, directionKey?: string, skip = 0): TrackingJob {
@@ -1744,7 +1751,7 @@ function newTrackingJob(stopId: string, lineId: string, directionKey?: string, s
     armed: false,
     missingStreak: 0,
     busesSeen: 0,
-    skip: skip > 0 ? 1 : 0,
+    skip: clampSkip(skip),
     warnedAt3: false,
   }
 }
@@ -1764,21 +1771,18 @@ async function renewTracking(renewed: RenewedJob, sync = true): Promise<void> {
   let job = trackingById(renewed.id)
 
   if (!job) {
-    // Mientras tanto se ha creado otro aviso y no queda hueco. La
-    // sincronización lo retira también del servicio.
-    if (state.trackings.length >= MAX_TRACKING_JOBS) {
-      log('warn', 'aviso', `No se pudo renovar el aviso de la línea ${renewed.lineId}: no queda hueco.`)
-      showToast(`No hay hueco para seguir la línea ${renewed.lineId}: ya tienes ${MAX_TRACKING_JOBS} avisos`, 'error')
-      if (sync) {
-        await syncTrackingService()
-      }
-      return
+    // Solo hay sitio para uno: "Siguiente bus" es lo último que se ha pulsado,
+    // así que sustituye a cualquier otro que se hubiera creado mientras tanto
+    // (el servicio ya lo ha hecho por su lado al renovar).
+    for (const other of state.trackings) {
+      delete state.trackingStopsAway[other.id]
+      await cancelNotification(notificationId(other.id))
     }
-
     job = newTrackingJob(renewed.stopId, renewed.lineId, renewed.directionKey ?? undefined)
-    state.trackings = [...state.trackings, job]
+    state.trackings = [job]
   } else {
     // Pulsado dos veces, o reentregado por el sistema: se reinicia la cuenta.
+    state.trackings = [job]
     job.active = true
     job.busesSeen = 0
     // "Siguiente bus" es el que viene ahora, aunque el aviso fuera del segundo.
@@ -1789,18 +1793,10 @@ async function renewTracking(renewed: RenewedJob, sync = true): Promise<void> {
     job.warnedAt3 = false
   }
 
-  // Lo recién renovado es lo último que se ha tocado: si hay otro activo, se
-  // pausa, igual que al crear o reanudar uno.
-  const turnedOff = enforceActiveLimit(job.id)
   persistTrackings()
 
   log('info', 'aviso', `Aviso renovado con el siguiente bus: línea ${job.lineId} en ${job.stopName}.`)
-  showToast(
-    turnedOff.length > 0
-      ? 'Siguiente bus en marcha; se ha pausado el otro aviso'
-      : `Te avisaremos del siguiente bus de la línea ${job.lineId}`,
-    'success',
-  )
+  showToast(`Te avisaremos del siguiente bus de la línea ${job.lineId}`, 'success')
 
   if (sync) {
     await syncTrackingService()
@@ -1833,43 +1829,52 @@ async function removeTracking(id: string, notify = true): Promise<void> {
 }
 
 /**
- * Pausa o reanuda un aviso sin borrarlo.
+ * "Saltar": el aviso deja de seguir al autobús que seguía y pasa al siguiente
+ * de la línea (para cuando ya no se llega a ese, o se ha decidido no cogerlo).
  *
- * Un aviso en reposo conserva su parada, su línea, su sentido y los autobuses
- * ya contados: se pueden tener dos montados —el de la ida y el de la vuelta— y
- * alternar de un toque. Al reanudar uno se pausa el otro, porque solo uno puede
- * mantenerse actualizado: es preferible a rechazar la acción, porque lo que se
- * acaba de tocar es siempre lo que se quiere mirar ahora.
+ * No cuenta como autobús visto: se suma uno a los que hay que dejar pasar, y
+ * el aviso sigue igual que si se hubiera creado eligiendo ese autobús.
  */
-async function toggleJobActive(id: string): Promise<void> {
+async function skipTracking(id: string): Promise<void> {
   const job = trackingById(id)
-
   if (!job) {
     return
   }
 
-  job.active = !job.active
-  const turnedOff = job.active ? enforceActiveLimit(id) : []
+  if (job.skip >= MAX_TRACKING_SKIP) {
+    showToast('No se puede saltar más: ya sigues a uno de los últimos con hora', 'info')
+    return
+  }
+
+  if (!trackingArrival({ ...job, skip: job.skip + 1 })) {
+    showToast(`Todavía no hay otro autobús de la línea ${job.lineId} con hora`, 'info')
+    return
+  }
+
+  job.skip += 1
+  // La vibración de los 3 minutos ya se dio (o no) por el anterior; el nuevo
+  // también tiene derecho a la suya.
+  job.warnedAt3 = false
+  // El recuento de paradas era del autobús que se seguía.
+  delete state.trackingStopsAway[id]
+
+  if (trackingServiceActive) {
+    // El servicio es quien lleva la cuenta: se le pide a él que salte y se
+    // copia lo que diga, para que pantalla y notificación no discrepen.
+    try {
+      const result = await BusTracking.skip({ jobId: id })
+      if (typeof result.skip === 'number') {
+        job.skip = clampSkip(result.skip)
+      }
+    } catch (error) {
+      log('warn', 'aviso', `El servicio no pudo saltar de autobús: ${String(error)}`)
+    }
+  }
 
   persistTrackings()
-
-  if (!job.active) {
-    // En pausa nadie mira las paradas anteriores: el último recuento envejece
-    // sin que nada lo corrija, así que se tira en vez de dejarlo congelado.
-    delete state.trackingStopsAway[id]
-    await cancelNotification(notificationId(id))
-  }
-
-  await syncTrackingService()
-
-  if (turnedOff.length > 0) {
-    showToast('Se ha pausado el otro aviso: solo uno se mantiene actualizado a la vez', 'info')
-  } else {
-    showToast(job.active ? 'Aviso reanudado' : 'Aviso en pausa', 'info')
-  }
-
+  log('info', 'aviso', `Salto: la línea ${job.lineId} en ${job.stopName} sigue ahora al ${job.skip + 1}º autobús.`)
+  showToast(`Ahora sigues al ${job.skip + 1}º autobús de la línea ${job.lineId}`, 'success')
   render()
-  void refreshVisible('auto')
 }
 
 /**
@@ -1904,17 +1909,25 @@ async function restoreTrackingService(): Promise<void> {
         observedAt: update.at,
       }
 
-      // El de detrás también: es el que enseña un aviso que sigue al segundo.
-      const next = typeof update.nextMinutes === 'number' && update.nextMinutes >= 0 && update.minutes >= 0
-        ? [{
-            ...arrival,
-            minutesUntil: update.nextMinutes,
-            status: update.nextArriving ? ('arriving' as const) : ('scheduled' as const),
-            estimatedClock: new Date(update.at + update.nextMinutes * 60_000).toLocaleTimeString('es-ES', {
-              hour: '2-digit',
-              minute: '2-digit',
-            }),
-          }]
+      // Los de detrás también: son los que enseña un aviso que sigue al 2º (o
+      // al 3º tras saltar). Un servicio antiguo solo manda el de detrás.
+      const behind = Array.isArray(update.line) && update.line.length > 0
+        ? update.line.slice(1)
+        : typeof update.nextMinutes === 'number'
+          ? [{ minutes: update.nextMinutes, arriving: update.nextArriving === true }]
+          : []
+      const next = update.minutes >= 0
+        ? behind
+            .filter((item) => item.minutes >= 0)
+            .map((item) => ({
+              ...arrival,
+              minutesUntil: item.minutes,
+              status: item.arriving ? ('arriving' as const) : ('scheduled' as const),
+              estimatedClock: new Date(update.at + item.minutes * 60_000).toLocaleTimeString('es-ES', {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+            }))
         : []
 
       state.feeds[update.stopId] = {
@@ -1935,8 +1948,10 @@ async function restoreTrackingService(): Promise<void> {
       const job = trackingById(update.jobId)
       if (job) {
         job.busesSeen = update.busesSeen
+        // Lo que queda por dejar pasar lo lleva el servicio: baja con cada paso
+        // y sube con "Saltar", también el de la notificación con la app cerrada.
         if (typeof update.skip === 'number') {
-          job.skip = Math.min(job.skip, update.skip)
+          job.skip = clampSkip(update.skip)
         }
         persistTrackings()
       }
@@ -2186,7 +2201,7 @@ function evaluateTrackingJob(job: TrackingJob, feed: StopFeed): void {
   if (isNative() && !trackingServiceActive && !document.hidden) {
     void showTrackingNotification({
       id: notificationId(job.id),
-      lineId: job.skip > 0 ? `${job.lineId} · 2º bus` : job.lineId,
+      lineId: job.skip > 0 ? `${job.lineId} · ${job.skip + 1}º bus` : job.lineId,
       destination: describeArrival(job.stopId, job.lineId),
       minutes: followedMinutes,
       arriving: followed !== null && (followed.status === 'arriving' || (followedMinutes ?? 1) <= 0),
@@ -2672,8 +2687,17 @@ function applyPendingScroll(): void {
 
   // Un fotograma de margen: con el mapa saliendo de pantalla completa, la
   // posicion final del documento aun no esta asentada.
+  //
+  // Se desplaza SOLO la pantalla. scrollIntoView mueve también todos los
+  // contenedores de encima, incluido el documento, y eso subía el header por
+  // debajo de la barra de notificaciones del móvil.
   requestAnimationFrame(() => {
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const screen = document.getElementById('screen')
+    if (!screen || !screen.contains(target)) {
+      return
+    }
+    const offset = target.getBoundingClientRect().top - screen.getBoundingClientRect().top
+    screen.scrollTo({ top: screen.scrollTop + offset - 12, behavior: 'smooth' })
   })
 }
 
@@ -2973,14 +2997,6 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
         return
       }
 
-      // Con el tope de avisos creados alcanzado no se bloquea la acción: se
-      // pregunta cuál de los que ya hay se sustituye.
-      if (purpose === 'tracking' && state.trackings.length >= MAX_TRACKING_JOBS) {
-        state.sheet = { kind: 'replace-job', stopId }
-        render()
-        return
-      }
-
       openPickLine(stopId, purpose)
       return
     }
@@ -3000,15 +3016,9 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       await removeTracking(element.dataset.tracking ?? '')
       return
 
-    // Pausa o reanuda un aviso sin borrarlo.
-    case 'toggle-job':
-      await toggleJobActive(element.dataset.job ?? '')
-      return
-
-    // Se ha alcanzado el tope de avisos creados: este es el que se sustituye.
-    case 'replace-job':
-      await removeTracking(element.dataset.job ?? '', false)
-      openPickLine(stopId, 'tracking')
+    // Deja el autobús que se seguía y pasa al siguiente de la línea.
+    case 'skip-tracking':
+      await skipTracking(element.dataset.tracking ?? '')
       return
 
     // Lista de llegadas: las que pasan de ARRIVALS_PREVIEW se piden a mano, y
@@ -3347,6 +3357,12 @@ function openPickLine(stopId: string, purpose: 'tracking' | 'monitor'): void {
   state.draft.skip = 0
   state.sheet = { kind: 'pick-line', stopId, purpose }
   render()
+
+  // "1er / 2º autobús disponible" enseñan cuánto le falta a cada uno: que sea
+  // la hora de ahora y no la de la última vez que se miró la parada.
+  if (purpose === 'tracking') {
+    void refreshOneStop(stopId)
+  }
 }
 
 /**
@@ -3394,10 +3410,13 @@ async function confirmSheet(
     render()
     // El sentido solo se ha preguntado cuando por la parada pasaban varios; si
     // no, el borrador trae el único posible y da igual pasarlo.
-    await createTracking(stopId, lineId, state.draft.directionKey, state.draft.skip)
+    const replaced = await createTracking(stopId, lineId, state.draft.directionKey, state.draft.skip)
     state.tab = 'seguimiento'
     persistTab()
-    showToast('Te avisaremos cuando se acerque', 'success')
+    showToast(
+      replaced ? 'Aviso sustituido: te avisaremos cuando se acerque' : 'Te avisaremos cuando se acerque',
+      'success',
+    )
     render()
     return
   }

@@ -43,10 +43,9 @@ import java.util.regex.Pattern;
  * segundo plano: los temporizadores del WebView se congelan, pero un servicio en
  * primer plano con notificacion persistente sigue ejecutandose.
  *
- * Desde la v4.4 puede llevar mas de un aviso a la vez (hasta {@link #MAX_JOBS}).
- * Cada uno tiene su propia notificacion y su propia cuenta de autobuses, y se
- * consultan en serie dentro de cada ciclo para no disparar dos peticiones
- * simultaneas contra una fuente que limita por IP.
+ * Desde la v6.4 lleva un solo aviso ({@link #MAX_JOBS}): crear otro en la app
+ * sustituye al que hubiera. El codigo sigue recorriendo una lista porque los
+ * controles de puntualidad comparten el mismo ciclo.
  *
  * El seguimiento de un aviso no termina con el primer autobus: cuenta los pasos
  * reales de la linea y sigue avisando del siguiente hasta completar
@@ -91,6 +90,12 @@ public class BusTrackingService extends Service {
      * porque para entonces el servicio puede estar apagado y sin recuerdo de el.
      */
     public static final String ACTION_RENEW_JOB = "com.icuas.salbus.TRACKING_RENEW_JOB";
+
+    /**
+     * Boton "Saltar" (de la notificacion o de la app): el aviso deja el autobus
+     * que seguia y pasa al siguiente de la linea.
+     */
+    public static final String ACTION_SKIP_JOB = "com.icuas.salbus.TRACKING_SKIP_JOB";
 
     public static final String EXTRA_JOBS = "jobs";
     public static final String EXTRA_MONITORS = "monitors";
@@ -163,7 +168,13 @@ public class BusTrackingService extends Service {
     private static final int MAX_PENDING_PASSES = 200;
 
     /** Avisos simultaneos que admite el servicio. */
-    public static final int MAX_JOBS = 2;
+    public static final int MAX_JOBS = 1;
+
+    /**
+     * Autobuses que un aviso puede dejar pasar sin contarlos (crear el aviso
+     * con el 2º, y cada "Saltar"). Copia de MAX_TRACKING_SKIP en state.ts.
+     */
+    public static final int MAX_SKIP = 3;
 
     /** Tope de autobuses por aviso; el numero real lo elige la app. */
     public static final int MAX_TARGET_BUSES = 3;
@@ -333,6 +344,8 @@ public class BusTrackingService extends Service {
         /** El autobus de detras en la ultima consulta, para la pantalla; -1 si no consta. */
         int nextMinutes = -1;
         boolean nextArriving = false;
+        /** Todos los de la linea en la ultima consulta, en orden; para la pantalla y "Saltar". */
+        List<ArrivalsClient.Arrival> line = new ArrayList<>();
         /** La vibracion de los 3 minutos ya se ha dado para el autobus en curso. */
         boolean warnedAt3 = false;
         /** La ultima consulta de este aviso se topo con el limite de la fuente. */
@@ -629,6 +642,16 @@ public class BusTrackingService extends Service {
             return renewJob(intent);
         }
 
+        if (ACTION_SKIP_JOB.equals(intent.getAction())) {
+            skipJob(valueOf(intent.getStringExtra(EXTRA_JOB_ID)));
+            if (jobs.isEmpty() && monitors.isEmpty()) {
+                // Boton de una notificacion que sobrevivio al servicio.
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            return START_REDELIVER_INTENT;
+        }
+
         // Despertar de la alarma: empieza una franja de puntualidad. No trae
         // listas, asi que no puede pasar por el camino de "sin nada = parar".
         if (ACTION_TICK.equals(intent.getAction())) {
@@ -762,9 +785,11 @@ public class BusTrackingService extends Service {
                 job.lastMinutes = previous.lastMinutes;
                 job.missingStreak = previous.missingStreak;
                 job.busesSeen = previous.busesSeen;
-                // Como los autobuses contados: lo que ya se dejo pasar aqui no
-                // vuelve a contar porque la web reenvie el valor de partida.
-                job.skip = Math.min(job.skip, previous.skip);
+                // Lo que queda por dejar pasar lo lleva el servicio: baja con
+                // cada paso y sube con "Saltar" (tambien desde la notificacion,
+                // con la app cerrada). La web solo lo fija al crear el aviso.
+                job.skip = previous.skip;
+                job.line = previous.line;
                 job.warnedAt3 = previous.warnedAt3;
                 // La localizacion tambien se conserva: la web reenvia la lista
                 // entera cada vez que cambia cualquier cosa (un ajuste, el otro
@@ -804,7 +829,7 @@ public class BusTrackingService extends Service {
         Job job = new Job(parts[0], parts[1], parts[2], parts[3], parts[4]);
         job.route = parseRoute(parts, 6);
         job.directionKey = parts.length > 7 ? parts[7] : "";
-        job.skip = Math.min(1, Math.max(0, parseInt(parts, 8)));
+        job.skip = Math.min(MAX_SKIP, Math.max(0, parseInt(parts, 8)));
         return job;
     }
 
@@ -818,6 +843,32 @@ public class BusTrackingService extends Service {
         return String.join(FIELD_SEPARATOR,
             job.id, job.stopId, job.stopName, job.lineId, job.destination, "0",
             String.join(",", job.route), job.directionKey, "0");
+    }
+
+    /**
+     * "Saltar": deja el autobus que se seguia y pasa al siguiente de la linea.
+     *
+     * Solo si la ultima consulta tenia otro con hora: si no, el aviso quedaria
+     * siguiendo a un autobus que no consta. No suma a busesSeen; es como si el
+     * aviso se hubiera creado eligiendo ese autobus.
+     */
+    private void skipJob(String jobId) {
+        Job job = findJob(jobId);
+        if (job == null || job.skip >= MAX_SKIP || job.skip + 1 >= job.line.size()) {
+            return;
+        }
+
+        job.skip += 1;
+        job.warnedAt3 = false;
+        job.stopsAway = -1;
+        job.stopsAwayAt = 0L;
+        job.routeSweptAt = 0L;
+
+        // Se consulta ya para que la notificacion diga enseguida el nuevo tiempo.
+        if (running && worker != null) {
+            worker.removeCallbacksAndMessages(null);
+            worker.post(this::poll);
+        }
     }
 
     /**
@@ -1155,8 +1206,14 @@ public class BusTrackingService extends Service {
 
         ArrivalsClient.Arrival arrival =
             result.status == ArrivalsClient.STATUS_OK ? result.findLine(job.lineId) : null;
+        if (result.status == ArrivalsClient.STATUS_OK) {
+            job.line = result.lineArrivals(job.lineId);
+        } else if (result.status == ArrivalsClient.STATUS_EMPTY) {
+            job.line = new ArrayList<>();
+        }
+        // El de detras, o el que se sigue si se ha saltado mas de uno.
         ArrivalsClient.Arrival next =
-            result.status == ArrivalsClient.STATUS_OK ? result.findLine(job.lineId, 1) : null;
+            result.status == ArrivalsClient.STATUS_OK ? result.findLine(job.lineId, Math.max(1, job.skip)) : null;
         job.nextMinutes = next == null ? -1 : (next.arriving ? 0 : next.minutes);
         job.nextArriving = next != null && next.arriving;
 
@@ -1199,12 +1256,13 @@ public class BusTrackingService extends Service {
             }
 
             String where = job.whereText(System.currentTimeMillis());
+            String nth = (job.skip + 1) + "º bus";
             String title = job.skip > 0
                 ? followed < 0
-                    ? "Línea " + job.lineId + " · 2º bus sin estimación"
+                    ? "Línea " + job.lineId + " · " + nth + " sin estimación"
                     : followed <= 0
-                        ? "Línea " + job.lineId + " · 2º bus llegando"
-                        : "Línea " + job.lineId + " · 2º bus en " + followed + " min"
+                        ? "Línea " + job.lineId + " · " + nth + " llegando"
+                        : "Línea " + job.lineId + " · " + nth + " en " + followed + " min"
                 : minutes <= 0
                     ? "Línea " + job.lineId + " · Llegando"
                     : "Línea " + job.lineId + " · En " + minutes + " min";
@@ -1599,7 +1657,7 @@ public class BusTrackingService extends Service {
             int stopsAway = job.hasFreshFix(System.currentTimeMillis()) ? job.stopsAway : -1;
             plugin.emitArrivalUpdate(
                 job.id, job.stopId, job.lineId, minutes, arriving, status, job.busesSeen, finished,
-                stopsAway, job.nextMinutes, job.nextArriving, job.skip);
+                stopsAway, job.nextMinutes, job.nextArriving, job.skip, job.line);
         }
     }
 
@@ -1646,7 +1704,7 @@ public class BusTrackingService extends Service {
             stopIntent,
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-        return new Notification.Builder(this, CHANNEL_ID)
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID)
             // Icono monocromo con fondo transparente: Android solo usa el alfa.
             .setSmallIcon(R.drawable.ic_stat_salbus)
             .setContentTitle(title)
@@ -1657,7 +1715,22 @@ public class BusTrackingService extends Service {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(Notification.CATEGORY_TRANSPORT)
-            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setVisibility(Notification.VISIBILITY_PUBLIC);
+
+        // "Saltar" solo cuando hay otro autobus con hora al que pasar.
+        if (job.skip < MAX_SKIP && job.skip + 1 < job.line.size()) {
+            Intent skipIntent = new Intent(this, BusTrackingService.class);
+            skipIntent.setAction(ACTION_SKIP_JOB);
+            skipIntent.putExtra(EXTRA_JOB_ID, job.id);
+            PendingIntent skipPending = PendingIntent.getService(
+                this,
+                2001 + Math.abs(job.id.hashCode() % 1000),
+                skipIntent,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            builder.addAction(new Notification.Action.Builder(null, "Saltar", skipPending).build());
+        }
+
+        return builder
             .addAction(new Notification.Action.Builder(null, "Detener", stopPending).build())
             .build();
     }

@@ -158,6 +158,30 @@ public class BusTrackingPlugin extends Plugin {
         }
     }
 
+    /**
+     * "Saltar" desde la app: el aviso pasa a seguir al siguiente autobus de la
+     * linea. Lo hace el servicio, que es quien lleva la cuenta; el nuevo valor
+     * llega a la web con el siguiente arrivalUpdate.
+     */
+    @PluginMethod
+    public void skip(PluginCall call) {
+        String jobId = call.getString("jobId", "");
+        if (jobId == null || jobId.isEmpty() || !BusTrackingService.isRunning()) {
+            call.resolve();
+            return;
+        }
+
+        Intent intent = new Intent(getContext(), BusTrackingService.class);
+        intent.setAction(BusTrackingService.ACTION_SKIP_JOB);
+        intent.putExtra(BusTrackingService.EXTRA_JOB_ID, jobId);
+        try {
+            getContext().startService(intent);
+            call.resolve();
+        } catch (Exception error) {
+            call.reject("No se pudo saltar de autobus: " + error.getMessage());
+        }
+    }
+
     /** Detiene todos los avisos. */
     @PluginMethod
     public void stop(PluginCall call) {
@@ -275,7 +299,8 @@ public class BusTrackingPlugin extends Plugin {
         int stopsAway,
         int nextMinutes,
         boolean nextArriving,
-        int skip
+        int skip,
+        java.util.List<ArrivalsClient.Arrival> line
     ) {
         JSObject payload = new JSObject();
         payload.put("jobId", jobId);
@@ -293,6 +318,17 @@ public class BusTrackingPlugin extends Plugin {
         payload.put("nextMinutes", nextMinutes);
         payload.put("nextArriving", nextArriving);
         payload.put("skip", skip);
+        // Todos los de la linea: tras "Saltar" se puede seguir al 3º o al 4º.
+        JSArray lineArray = new JSArray();
+        if (line != null) {
+            for (ArrivalsClient.Arrival item : line) {
+                JSObject entry = new JSObject();
+                entry.put("minutes", item.arriving ? 0 : item.minutes);
+                entry.put("arriving", item.arriving);
+                lineArray.put(entry);
+            }
+        }
+        payload.put("line", lineArray);
         payload.put("at", System.currentTimeMillis());
         notifyListeners("arrivalUpdate", payload);
     }

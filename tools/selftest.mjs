@@ -1351,12 +1351,13 @@ async function main() {
     const viewsSource = await fs.readFile(path.join(projectRoot, 'src', 'views.ts'), 'utf8')
     const uiSource = await fs.readFile(path.join(projectRoot, 'src', 'ui.ts'), 'utf8')
 
-    // Una sola funcion activa: dos se quitaban el turno en una cola que solo
-    // admite una peticion cada dos segundos.
-    check('solo una funcion de seguimiento se mantiene actualizada',
-      /export const MAX_ACTIVE_JOBS = 1/.test(stateSource))
-    check('reanudar una pausa automaticamente la otra',
-      mainSource.includes('enforceActiveLimit(id)'))
+    // Un solo aviso: dos se quitaban el turno en una cola que solo admite una
+    // peticion cada dos segundos. Crear otro sustituye al que hubiera.
+    check('solo puede haber un aviso de proximo bus',
+      /export const MAX_TRACKING_JOBS = 1/.test(stateSource))
+    check('crear un aviso sustituye al que hubiera',
+      /async function createTracking\([\s\S]{0,900}?await removeTracking\(old\.id, false\)/.test(mainSource)
+        && mainSource.includes('state.trackings = [job]'))
 
     // "Al dia" son 40 s: el doble del ciclo del recorrido de un aviso mirado.
     check('un dato esta al dia durante 40 segundos',
@@ -1375,12 +1376,15 @@ async function main() {
       viewsSource.includes('Frecuencias de actualización')
         && viewsSource.includes('function renderRefreshRulesCard()'))
 
-    // Un aviso se puede pausar, y al pausarlo su notificacion se retira.
-    check('el aviso de proximo bus se puede pausar',
-      viewsSource.includes('renderJobToggle(tracking.id, tracking.active)'))
-    check('al pausar un aviso se cierra su notificacion',
-      mainSource.includes('if (!job.active) {')
-        && mainSource.includes('await cancelNotification(notificationId(id))'))
+    // Ya no hay pausa: en su lugar, saltar al siguiente autobus.
+    check('el aviso ya no tiene pausa ni reanudar',
+      !viewsSource.includes('renderJobToggle(')
+        && !mainSource.includes("case 'toggle-job'")
+        && !mainSource.includes('function toggleJobActive('))
+    check('el aviso tiene botón para saltar al siguiente autobús',
+      viewsSource.includes('renderSkipButton(tracking)')
+        && viewsSource.includes('data-action="skip-tracking"')
+        && mainSource.includes("case 'skip-tracking'"))
 
     // Midiendo puntualidad NO se pausa el aviso: es una notificacion que
     // alguien espera. Lo que se apaga es su rastreo, que es la parte cara.
@@ -1477,13 +1481,12 @@ async function main() {
         && stateSource.includes('dropLegacyFollows()')
         && stateSource.includes("window.localStorage.removeItem(KEYS.follows)"))
 
-    // Se pueden tener dos montados —ida y vuelta— pero solo uno trabaja.
-    check('se pueden tener dos avisos creados',
-      /export const MAX_TRACKING_JOBS = 2/.test(stateSource))
-    check('solo uno se mantiene actualizado',
-      /export const MAX_ACTIVE_JOBS = 1/.test(stateSource))
-    check('reanudar uno pausa el otro',
-      mainSource.includes('const turnedOff = job.active ? enforceActiveLimit(id) : []'))
+    // Un solo aviso, y sin hoja de "cual se sustituye".
+    check('ya no se pregunta qué aviso sustituir',
+      !viewsSource.includes('renderReplaceJobSheet')
+        && !mainSource.includes("'replace-job'"))
+    check('de lo guardado con dos avisos se queda el activo',
+      /function readTrackings\(\)[\s\S]{0,1200}?\.slice\(0, MAX_TRACKING_JOBS\)/.test(stateSource))
 
     // La tarjeta del aviso lleva dentro el recorrido; la de Inicio no, que es
     // un vistazo y no la pantalla donde se va a mirar por donde viene.
@@ -1757,8 +1760,19 @@ async function main() {
             && serviceSource.includes('if (job.skip > 0) {\n            job.skip -= 1;'))
         check('el servicio recibe y devuelve cuántos autobuses dejar pasar',
           pluginSource.includes('String.valueOf(job.optInt("skip", 0))')
-            && serviceSource.includes('job.skip = Math.min(1, Math.max(0, parseInt(parts, 8)));')
+            && serviceSource.includes('job.skip = Math.min(MAX_SKIP, Math.max(0, parseInt(parts, 8)));')
             && pluginSource.includes('payload.put("skip", skip);'))
+        check('«Saltar» también desde la notificación, y el servicio manda en la cuenta',
+          serviceSource.includes('ACTION_SKIP_JOB.equals(intent.getAction())')
+            && serviceSource.includes('"Saltar", skipPending')
+            && serviceSource.includes('job.skip = previous.skip;')
+            && pluginSource.includes('public void skip(PluginCall call)')
+            && mainSource.includes('await BusTracking.skip({ jobId: id })'))
+        check('cada opción de autobús dice cuánto le falta',
+          viewsSource.includes('º autobús disponible · ${draftBusEta(stopId, selectedLineId, skip)}'))
+        check('web y servicio admiten el mismo número de saltos',
+          /export const MAX_TRACKING_SKIP = (\d+)/.exec(await fs.readFile(path.join(projectRoot, 'src', 'state.ts'), 'utf8'))?.[1]
+            === /public static final int MAX_SKIP = (\d+);/.exec(serviceSource)?.[1])
         check('«Siguiente bus» vuelve a seguir al próximo',
           serviceSource.includes('String.join(",", job.route), job.directionKey, "0");')
             && mainSource.includes('    job.skip = 0\n'))
@@ -1884,8 +1898,9 @@ async function main() {
     // Es la MISMA hoja que dentro de la app, con su pregunta de cuál se
     // sustituye cuando ya no caben más avisos. Dos versiones de la misma
     // ventana acabarían ofreciendo cosas distintas.
-    check('desde el widget también se puede sustituir un aviso lleno',
-      /openWidgetStop[\s\S]{0,1200}?state\.trackings\.length >= MAX_TRACKING_JOBS/.test(main))
+    check('desde el widget también se puede sustituir el aviso en marcha',
+      /openWidgetStop[\s\S]{0,1200}?openPickLine\(stopId, 'tracking'\)/.test(main)
+        && !/openWidgetStop[\s\S]{0,1200}?replace-job/.test(main))
 
     // El widget no tiene refresco propio: si una de estas tres acciones no lo
     // avisa, se queda enseñando un nombre que ya no es el de esa parada.

@@ -46,6 +46,7 @@ const ICONS: Record<string, string> = {
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   play: '<path d="M8 5.5v13l11-6.5z"/>',
   pause: '<path d="M9 5v14M15 5v14"/>',
+  skip: '<path d="M6 5.5v13l9-6.5z"/><path d="M18 5v14"/>',
   down: '<path d="M12 5v14"/><path d="m6 13 6 6 6-6"/>',
   up: '<path d="M12 19V5"/><path d="m6 11 6-6 6 6"/>',
   vibrate: '<rect x="9" y="4" width="6" height="16" rx="2"/><path d="M5 9v6M19 9v6M2 11v2M22 11v2"/>',

@@ -83,8 +83,8 @@ export interface TrackingJob {
    */
   directionKey: string | null
   /**
-   * Un aviso creado puede estar en reposo: sigue existiendo y se puede reactivar
-   * de un toque, pero no consulta la fuente ni publica notificacion.
+   * Siempre `true` desde que no hay pausa. Se conserva por los avisos guardados
+   * con versiones anteriores, que lo traen.
    */
   active: boolean
   startedAt: number
@@ -97,7 +97,8 @@ export interface TrackingJob {
   busesSeen: number
   /**
    * Autobuses que dejar pasar antes del que se sigue: 0 es el proximo, 1 el que
-   * viene detras (para quien sabe que no llega al primero).
+   * viene detras, 2 el siguiente... Sube al crear el aviso eligiendo el 2º
+   * autobus y con cada pulsacion de "Saltar" (hasta MAX_TRACKING_SKIP).
    *
    * Los pasos se siguen detectando con el primero, que es el unico que la
    * fuente pone a cero minutos. Cada paso mientras quede alguno por dejar pasar
@@ -117,6 +118,20 @@ export interface TrackingJob {
  * persona usuaria en Ajustes; este es solo el maximo que admite el selector.
  */
 export const TRACKING_BUS_TARGET_MAX = 3
+
+/**
+ * Autobuses que un aviso puede tener por delante a la vez sin contarlos: con
+ * "Saltar" se llega a seguir el 4º, que es mas de lo que la fuente suele
+ * publicar con hora para una misma linea.
+ *
+ * El servicio nativo lleva su propia copia (MAX_SKIP en BusTrackingService).
+ */
+export const MAX_TRACKING_SKIP = 3
+
+export function clampSkip(value: unknown): number {
+  const number = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : 0
+  return Math.min(MAX_TRACKING_SKIP, Math.max(0, number))
+}
 
 /** Autobuses que ve pasar un aviso antes de darse por terminado. */
 export function trackingBusTarget(): number {
@@ -201,22 +216,17 @@ export const MAX_PASSES_PER_MONITOR = 400
  * Limites de las funciones de seguimiento                              *
  * ------------------------------------------------------------------ */
 
-/** Avisos de "proximo bus" que se pueden tener creados a la vez. */
-export const MAX_TRACKING_JOBS = 2
-
 /**
- * Avisos que pueden estar ACTIVOS a la vez.
+ * Avisos de "proximo bus" que puede haber a la vez: UNO.
  *
- * Es UNO. Un aviso activo consulta su parada cada 15 s y ademas rastrea las
- * paradas anteriores para situar el autobus; la fuente oficial limita por IP y
- * solo admite una peticion cada dos segundos. Con dos, los dos llegan tarde.
- *
- * Se pueden tener DOS creados —el de la ida y el de la vuelta, por ejemplo— y
- * alternar de un toque: reanudar uno pausa automaticamente el otro. Un aviso en
- * reposo conserva su parada, su linea, su sentido y los autobuses ya contados,
- * pero no consulta ni publica notificacion.
+ * Un aviso consulta su parada cada 15 s y ademas rastrea las paradas anteriores
+ * para situar el autobus; la fuente oficial limita por IP y solo admite una
+ * peticion cada dos segundos. Con dos, los dos llegan tarde. Antes se podian
+ * tener dos creados y alternar con pausa/reanudar; ahora crear uno nuevo
+ * sustituye al que hubiera, sin preguntar: lo ultimo que se pide es lo que se
+ * quiere mirar.
  */
-export const MAX_ACTIVE_JOBS = 1
+export const MAX_TRACKING_JOBS = 1
 
 /* ------------------------------------------------------------------ *
  * Ritmo de refresco                                                    *
@@ -416,14 +426,12 @@ export interface AppState {
     | { kind: 'stop-actions', stopId: string }
     | { kind: 'pick-line', stopId: string, purpose: 'tracking' | 'monitor' }
     | { kind: 'rename', stopId: string }
-    /** Se ha alcanzado el limite de esa modalidad: hay que sustituir una. */
-    | { kind: 'replace-job', stopId: string }
     | null
 
   draft: {
     lineId: string
     directionKey: string
-    /** Aviso nuevo: 0 sigue al proximo autobus, 1 al segundo. */
+    /** Aviso nuevo: 0 sigue al 1er autobus disponible, 1 al 2º. */
     skip: number
     startMinutes: number
     endMinutes: number
@@ -670,8 +678,13 @@ function readTrackings(): TrackingJob[] {
         (item): item is TrackingJob => item !== null,
       )
 
+  // Hasta la v6.3 podia haber dos (uno de ellos en pausa). Se queda el que
+  // estaba activo, y entre iguales el mas reciente.
   return list
     .filter((job) => job && typeof job.id === 'string')
+    .sort((left, right) =>
+      Number(right.active !== false) - Number(left.active !== false)
+      || (right.startedAt ?? 0) - (left.startedAt ?? 0))
     .slice(0, MAX_TRACKING_JOBS)
     .map((job) => ({
       ...job,
@@ -680,10 +693,10 @@ function readTrackings(): TrackingJob[] {
       // es cuando la red ya esta cargada.
       directionKey: typeof job.directionKey === 'string' ? job.directionKey : null,
       busesSeen: typeof job.busesSeen === 'number' ? job.busesSeen : 0,
-      skip: job.skip === 1 ? 1 : 0,
+      skip: clampSkip(job.skip),
       warnedAt3: job.warnedAt3 === true,
-      // Un aviso guardado con el formato antiguo estaba activo por definicion.
-      active: job.active !== false,
+      // Ya no hay pausa: el aviso que queda es el que trabaja.
+      active: true,
     }))
 }
 
@@ -1005,43 +1018,6 @@ export function clearLogs(): void {
 /* ------------------------------------------------------------------ *
  * Utilidades de estado                                                 *
  * ------------------------------------------------------------------ */
-
-/* ------------------------------------------------------------------ *
- * Avisos activos                                                       *
- * ------------------------------------------------------------------ */
-
-export function activeJobCount(): number {
-  return state.trackings.filter((job) => job.active).length
-}
-
-/**
- * Deja como mucho MAX_ACTIVE_JOBS avisos activos, pausando siempre los mas
- * antiguos: al crear o reanudar uno, el ultimo en llegar es el que interesa.
- *
- * @param keepId Aviso que nunca se pausa (el que se acaba de crear o reanudar).
- * @returns Los avisos que se han pausado, para poder avisar de ello.
- */
-export function enforceActiveLimit(keepId?: string): TrackingJob[] {
-  const turnedOff: TrackingJob[] = []
-
-  const active = state.trackings
-    .filter((job) => job.active && job.id !== keepId)
-    .sort((left, right) => left.startedAt - right.startedAt)
-
-  // El excedente se cuenta sobre el total, incluido el aviso protegido.
-  let excess = activeJobCount() - MAX_ACTIVE_JOBS
-
-  for (const job of active) {
-    if (excess <= 0) {
-      break
-    }
-    job.active = false
-    turnedOff.push(job)
-    excess -= 1
-  }
-
-  return turnedOff
-}
 
 export function isFavourite(stopId: string): boolean {
   return state.favourites.some((item) => item.stopId === stopId)

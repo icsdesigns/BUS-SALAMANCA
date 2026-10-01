@@ -20,7 +20,6 @@ import {
   SCHEDULE_ESTIMATE_ERROR_MINUTES,
 } from './services/schedule'
 import {
-  activeJobCount,
   APP_VERSION,
   AUTO_CYCLE_MS,
   FRESHNESS,
@@ -30,8 +29,8 @@ import {
   formatMinutesClock,
   isFavourite,
   isWithinWindow,
-  MAX_ACTIVE_JOBS,
   MAX_TRACKING_JOBS,
+  MAX_TRACKING_SKIP,
   parseClockToMinutes,
   state,
   TRACKING_INTERVAL_SECONDS,
@@ -194,9 +193,9 @@ export function trackingArrival(job: TrackingJob): Arrival | null {
   return line[job.skip] ?? null
 }
 
-/** "2º autobús · " mientras el aviso deja pasar el primero; vacío si no. */
+/** "2º autobús · " (o 3º…) mientras el aviso deja pasar alguno; vacío si no. */
 function skipLabel(job: TrackingJob): string {
-  return job.skip > 0 ? '2º autobús · ' : ''
+  return job.skip > 0 ? `${job.skip + 1}º autobús · ` : ''
 }
 
 /**
@@ -583,12 +582,9 @@ function renderFavourites(): string {
 /**
  * Un aviso de proximo bus.
  *
- * Lleva interruptor de pausa. Pausar NO es lo mismo que quitar: el aviso se
- * conserva entero —parada, línea, autobuses ya vistos— y vuelve de un toque,
- * mientras que quitarlo obliga a montarlo otra vez desde la parada. Lo que sí
- * desaparece al pausar es la notificación, y por eso desaparece: una
- * notificación persistente que ya no se actualiza es peor que ninguna, porque
- * se queda enseñando una hora que dejó de ser verdad.
+ * Lleva el botón de saltar (pasar a seguir al siguiente autobús de la línea) y
+ * el de cerrar. Ya no hay pausa: solo puede haber un aviso, y uno en reposo no
+ * servía más que para ocupar el hueco.
  */
 function renderTrackingBanner(tracking: TrackingJob): string {
   const arrival = trackingArrival(tracking)
@@ -600,12 +596,10 @@ function renderTrackingBanner(tracking: TrackingJob): string {
     : '')
 
   // Dónde viene el autobús, con la misma detección que dibuja el recorrido.
-  // Solo mientras el aviso trabaja: en pausa nadie está mirando las paradas
-  // anteriores, así que el número que hubiera es de hace rato.
-  const stopsAway = tracking.active ? describeStopsAway(trackingStopsAway(tracking)) : ''
+  const stopsAway = describeStopsAway(trackingStopsAway(tracking))
 
   return `
-    <section class="card${tracking.active ? '' : ' is-paused'}" data-key="tracking-${esc(tracking.id)}">
+    <section class="card" data-key="tracking-${esc(tracking.id)}">
       ${renderTrackingHead(tracking, arrival, progress, stopsAway)}
     </section>
   `
@@ -653,22 +647,15 @@ function renderTrackingHead(
       </div>
       <div class="card-actions">
         <div class="arrival-eta">${
-          !tracking.active
-            ? '<span class="eta-unit">en pausa</span>'
-            : arrival
-              ? renderEta(arrival)
-              : '<span class="eta-unit">buscando…</span>'
+          arrival
+            ? renderEta(arrival)
+            : '<span class="eta-unit">buscando…</span>'
         }</div>
-        ${renderJobToggle(tracking.id, tracking.active)}
+        ${renderSkipButton(tracking)}
         ${
           /*
-           * Una X de cierre, no una campana tachada.
-           *
-           * La campana tachada se lee como "silenciar", que es justo lo que hace
-           * el botón de al lado —el de pausa— y no lo que hace este: este BORRA
-           * el seguimiento entero, con su parada, su línea, su sentido y los
-           * autobuses ya contados. Dos acciones que no se parecen en nada,
-           * pegadas la una a la otra, no pueden dibujarse casi igual.
+           * Una X de cierre, no una campana tachada: la campana tachada se lee
+           * como "silenciar", y este botón BORRA el seguimiento entero.
            */
           ''
         }
@@ -693,23 +680,16 @@ function renderTrackingCard(tracking: TrackingJob): string {
   const progress = skipLabel(tracking) + (target > 1
     ? `Autobús ${Math.min(tracking.busesSeen + 1, target)} de ${target} · `
     : '')
-  const stopsAway = tracking.active ? describeStopsAway(trackingStopsAway(tracking)) : ''
+  const stopsAway = describeStopsAway(trackingStopsAway(tracking))
 
   return `
-    <section class="card${tracking.active ? '' : ' is-paused'}" data-key="tracking-${esc(tracking.id)}">
+    <section class="card" data-key="tracking-${esc(tracking.id)}">
       ${renderTrackingHead(tracking, arrival, progress, stopsAway, true)}
       <div class="card-body">
         ${
-          // En pausa NO se dibuja el recorrido. Un aviso en reposo no consulta,
-          // así que la fila de cada parada solo podría enseñar un guion: ocho
-          // renglones vacíos que ocupan media pantalla y no dicen nada. Se
-          // sustituyen por la única frase que sí informa, que es por qué está
-          // vacío y cómo se llena.
-          tracking.active
-            ? (tracking.skip > 0
-                ? '<p class="text-tiny">Sigues al segundo autobús: el que se ve en el recorrido es el primero, que dejarás pasar.</p>'
-                : '') + renderTrackingRoute(tracking)
-            : '<p class="text-tiny">En pausa: no consulta ni avisa. Reanúdalo para ver por dónde viene; solo un aviso se mantiene actualizado a la vez.</p>'
+          (tracking.skip > 0
+            ? `<p class="text-tiny">Sigues al ${tracking.skip + 1}º autobús: el que se ve en el recorrido es el primero, que dejarás pasar.</p>`
+            : '') + renderTrackingRoute(tracking)
         }
       </div>
     </section>
@@ -808,29 +788,30 @@ function renderTrackingRoute(tracking: TrackingJob): string {
 }
 
 /**
- * Interruptor de un aviso.
+ * Botón de saltar: el aviso deja el autobús que seguía y pasa al siguiente de
+ * la línea, para cuando ya no se llega a ese o se ha decidido no cogerlo.
  *
- * Un aviso en reposo no se borra: sigue creado y con su parada, su línea, su
- * sentido y los autobuses ya contados, pero no consulta ni publica
- * notificación. Es lo que permite tener montados el de la ida y el de la vuelta
- * y alternar de un toque sin volver a configurarlos.
- *
- * Solo uno se mantiene actualizado a la vez: reanudar uno pausa automáticamente
- * el otro. No hay nada que elegir ni ningún error que leer, y el botón lo avisa
- * antes de pulsarlo.
+ * Se desactiva cuando no hay otro autobús con hora al que pasar: pulsarlo
+ * dejaría el aviso siguiendo a un autobús que no consta.
  */
-function renderJobToggle(id: string, active: boolean): string {
-  const swaps = !active && activeJobCount() >= MAX_ACTIVE_JOBS
+function renderSkipButton(tracking: TrackingJob): string {
+  const next = tracking.skip < MAX_TRACKING_SKIP
+    ? trackingArrival({ ...tracking, skip: tracking.skip + 1 })
+    : null
+  const label = next
+    ? `Saltar al siguiente autobús (${liveMinutes(next) <= 0 ? 'llegando' : `en ${liveMinutes(next)} min`})`
+    : 'Saltar al siguiente autobús: todavía no hay otro con hora'
 
   return `
     <button
-      class="mini-btn${active ? ' is-on' : ''}"
+      class="mini-btn"
       type="button"
-      data-action="toggle-job"
-      data-job="${esc(id)}"
-      aria-label="${active ? 'Pausar' : 'Reanudar'}"
-      title="${swaps ? 'Se pausará el otro aviso: solo uno se mantiene actualizado a la vez' : ''}"
-    >${icon(active ? 'pause' : 'play')}</button>
+      data-action="skip-tracking"
+      data-tracking="${esc(tracking.id)}"
+      aria-label="${esc(label)}"
+      title="${esc(label)}"
+      ${next ? '' : 'disabled'}
+    >${icon('skip')}</button>
   `
 }
 
@@ -1811,7 +1792,7 @@ function renderSeguimiento(): string {
 
     ${renderJobGroup(
       'Avisos de próximo bus',
-      `${state.trackings.length} de ${MAX_TRACKING_JOBS}`,
+      'Uno a la vez',
       'bell',
       state.trackings.map((job) => renderTrackingCard(job)).join(''),
       '',
@@ -3305,10 +3286,9 @@ function renderTrackingRulesCard(): string {
         </p>
 
         <dl class="kv">
-          <dt>Avisos creados</dt><dd>máximo ${MAX_TRACKING_JOBS}</dd>
-          <dt>Actualizándose a la vez</dt><dd>${MAX_ACTIVE_JOBS}</dd>
-          <dt>Al reanudar uno</dt><dd>se pausa automáticamente el otro</dd>
-          <dt>Al crear uno de más</dt><dd>se pide cuál se sustituye</dd>
+          <dt>Avisos a la vez</dt><dd>${MAX_TRACKING_JOBS}</dd>
+          <dt>Al crear otro</dt><dd>sustituye al que hubiera</dd>
+          <dt>Botón saltar</dt><dd>pasa a seguir al siguiente autobús de la línea</dd>
           <dt>Fuera de la pestaña Seguir</dt><dd>sigue avisando, sin dibujar el recorrido</dd>
           <dt>Midiendo puntualidad</dt><dd>sigue avisando, sin rastrear por dónde viene</dd>
         </dl>
@@ -3434,9 +3414,7 @@ function renderSheet(): string {
       ? renderStopActionsSheet(sheet.stopId)
       : sheet.kind === 'pick-line'
         ? renderPickLineSheet(sheet.stopId, sheet.purpose)
-        : sheet.kind === 'replace-job'
-          ? renderReplaceJobSheet(sheet.stopId)
-          : renderRenameSheet(sheet.stopId)
+        : renderRenameSheet(sheet.stopId)
 
   return `
     <button class="sheet-backdrop" type="button" data-action="close-sheet" aria-label="Cerrar"></button>
@@ -3460,7 +3438,9 @@ function renderStopActionsSheet(stopId: string): string {
         ${icon('bell')}
         <span class="sheet-option-copy">
           <strong>Avisarme del próximo bus</strong>
-          <span>Notificación fija con los minutos que faltan y por dónde viene · ${state.trackings.length} de ${MAX_TRACKING_JOBS} creados.</span>
+          <span>Notificación fija con los minutos que faltan y por dónde viene.${
+            state.trackings.length > 0 ? ' Sustituye al aviso que tienes en marcha.' : ''
+          }</span>
         </span>
       </button>
       <button class="sheet-option" type="button" data-action="pick-line" data-stop="${esc(
@@ -3476,45 +3456,23 @@ function renderStopActionsSheet(stopId: string): string {
   `
 }
 
-/**
- * Se ha alcanzado el tope de avisos creados.
- *
- * En vez de rechazar la acción con un error, se enseña lo que ya hay y se pide
- * cuál se sustituye: quien lo pide ya ha decidido que quiere este aviso nuevo, y
- * lo único que falta por saber es a costa de cuál.
- */
-function renderReplaceJobSheet(stopId: string): string {
-  return `
-    <div class="sheet-head">
-      <h3>Avisarme del próximo bus</h3>
-      <p>Ya tienes ${MAX_TRACKING_JOBS} de ${MAX_TRACKING_JOBS}. Elige cuál se sustituye por el de ${esc(
-        stopName(stopId),
-      )}.</p>
-    </div>
+/** Lo que le falta ahora al autobús número `skip` (desde 0) de la línea en la parada. */
+function draftBusEta(stopId: string, lineId: string, skip: number): string {
+  const feed = feedOf(stopId)
+  if (!feed) {
+    return 'consultando…'
+  }
 
-    <div class="sheet-options">
-      ${state.trackings
-        .map(
-          (job) => `
-        <button class="sheet-option" type="button" data-action="replace-job" data-stop="${esc(
-          stopId,
-        )}" data-job="${esc(job.id)}">
-          ${lineChip(job.lineId, lineColor(job.lineId))}
-          <span class="sheet-option-copy">
-            <strong>${esc(job.stopName)}</strong>
-            <span>${esc(describeArrival(job.stopId, job.lineId))} · ${job.active ? 'activo' : 'en pausa'}</span>
-          </span>
-          ${icon('chevron')}
-        </button>
-      `,
-        )
-        .join('')}
-    </div>
+  const arrival = (feed.arrivals ?? [])
+    .filter((item) => item.lineId === lineId)
+    .sort((left, right) => liveMinutes(left) - liveMinutes(right))[skip]
 
-    <button class="btn btn-secondary btn-block" type="button" data-action="close-sheet">
-      Dejarlo como está
-    </button>
-  `
+  if (!arrival) {
+    return 'sin hora todavía'
+  }
+
+  const minutes = liveMinutes(arrival)
+  return arrival.status === 'arriving' || minutes <= 0 ? 'llegando' : `${minutes} min`
 }
 
 function renderPickLineSheet(stopId: string, purpose: 'tracking' | 'monitor'): string {
@@ -3591,15 +3549,21 @@ function renderPickLineSheet(stopId: string, purpose: 'tracking' | 'monitor'): s
     }
 
     ${
-      // Qué autobús: el próximo, o el de detrás para quien ya sabe que no llega
-      // al primero. Con el segundo el aviso deja pasar uno y sigue al otro.
+      // Qué autobús: el 1º disponible, o el de detrás para quien ya sabe que no
+      // llega al primero. Cada opción dice cuánto le falta ahora a ese autobús,
+      // que es justo el dato con el que se decide.
       purpose === 'tracking'
         ? `
       <label class="field">
-        <span>Qué autobús</span>
+        <span>Autobús</span>
         <select class="select" data-action="draft-skip">
-          <option value="0" ${state.draft.skip === 1 ? '' : 'selected'}>El próximo</option>
-          <option value="1" ${state.draft.skip === 1 ? 'selected' : ''}>El segundo (dejar pasar el próximo)</option>
+          ${[0, 1]
+            .map(
+              (skip) => `<option value="${skip}" ${state.draft.skip === skip ? 'selected' : ''}>${esc(
+                `${skip + 1}º autobús disponible · ${draftBusEta(stopId, selectedLineId, skip)}`,
+              )}</option>`,
+            )
+            .join('')}
         </select>
       </label>
     `

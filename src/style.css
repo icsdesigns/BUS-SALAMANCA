@@ -47,8 +47,11 @@
   --topbar-h: 60px;
   --tabbar-h: 64px;
 
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Capacitor 8 inyecta --safe-area-inset-* desde Android: los WebView
+     anteriores al 140 devuelven 0 en env() con la app de borde a borde, y el
+     header quedaba debajo de la barra de notificaciones. */
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
 
   --font: "Segoe UI", Roboto, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
   --mono: "SF Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -115,6 +118,9 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* El documento no se desplaza nunca: lo hace .screen. Si se desplazaba (un
+     scrollIntoView, el teclado), el header se metía bajo la barra de estado. */
+  overflow: hidden;
 }
 
 body {
@@ -268,9 +274,13 @@ p {
   /* `minmax(0, 1fr)`: sin esto la columna del grid se dimensiona al contenido más
      ancho (la barra de pestañas) y toda la app desborda a la derecha. */
   grid-template-columns: minmax(0, 1fr);
-  height: 100dvh;
-  width: 100%;
+  /* Fijada a la ventana: aunque algo desplace el documento, el header sigue
+     pegado arriba con su hueco para la barra de estado. */
+  position: fixed;
+  inset: 0;
   overflow: hidden;
+  /* `clip` además impide que un scrollIntoView desplace la propia carcasa. */
+  overflow: clip;
 }
 
 .topbar {
