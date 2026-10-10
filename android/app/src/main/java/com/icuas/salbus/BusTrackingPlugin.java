@@ -31,6 +31,10 @@ import java.util.Set;
  * pasos detectados se quedan en disco y la web los recoge con {@code takePasses}
  * cuando vuelve a abrirse: emparejarlos con el horario oficial necesita el GTFS,
  * que solo existe en la parte web.
+ *
+ * Los avisos que terminan se apuntan siempre en disco ({@code takeFinished}),
+ * porque el evento {@code arrivalUpdate} con {@code finished} se pierde si el
+ * WebView esta congelado o el proceso muere enseguida.
  */
 @CapacitorPlugin(name = "BusTracking")
 public class BusTrackingPlugin extends Plugin {
@@ -257,6 +261,42 @@ public class BusTrackingPlugin extends Plugin {
             if (job != null) {
                 jobs.put(job);
             }
+        }
+
+        JSObject result = new JSObject();
+        result.put("jobs", jobs);
+        call.resolve(result);
+    }
+
+    /**
+     * Avisos que terminaron (autobus pasado) y cuyo evento la app pudo no ver.
+     *
+     * Resuelve {@code { jobs: [{ id: string, at: number }] }}, con {@code at} en
+     * milisegundos desde epoch (instante en que termino el aviso). Se entregan y
+     * se borran de una vez, como los pasos. La web debe cerrar esos avisos, pero
+     * solo si no los ha vuelto a crear despues de {@code at}.
+     */
+    @PluginMethod
+    public void takeFinished(PluginCall call) {
+        JSArray jobs = new JSArray();
+        for (String raw : BusTrackingService.takeFinishedJobs(getContext())) {
+            String[] parts = raw.split(java.util.regex.Pattern.quote(BusTrackingService.FIELD_SEPARATOR), 2);
+            if (parts.length < 2 || parts[0].isEmpty()) {
+                continue;
+            }
+
+            long at;
+            try {
+                at = Long.parseLong(parts[1].trim());
+            } catch (NumberFormatException error) {
+                // Entrada mal formada: se ignora.
+                continue;
+            }
+
+            JSObject job = new JSObject();
+            job.put("id", parts[0]);
+            job.put("at", at);
+            jobs.put(job);
         }
 
         JSObject result = new JSObject();

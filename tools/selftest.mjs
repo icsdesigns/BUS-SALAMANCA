@@ -810,6 +810,23 @@ async function main() {
     /async function finishTracking\(id: string, alreadyNotified = false\)/.test(mainSource)
       && mainSource.includes('finishTracking(update.jobId, true)'))
 
+  // El evento `finished` se pierde si el WebView estaba congelado: al reabrir o
+  // volver a primer plano se leen los cierres guardados por el servicio, antes
+  // de los renovados y de sincronizar, y sin tocar un aviso mas nuevo.
+  check('los avisos cerrados en segundo plano se retiran al reabrir y al volver',
+    mainSource.includes('takeFinished(): Promise<')
+      && /async function applyFinishedTrackings\(\)[\s\S]*?job\.startedAt > at/.test(mainSource)
+      && /async function collectNativeTrackingChanges\(\)[\s\S]*?applyFinishedTrackings\(\)[\s\S]*?BusTracking\.takeRenewed\(\)/.test(mainSource)
+      && /async function restoreTrackingService\(\)[\s\S]*?collectNativeTrackingChanges\(\)[\s\S]*?await syncTrackingService\(\)/.test(mainSource)
+      && /visibilitychange[\s\S]*?reconcileNativeTrackings\(\)/.test(mainSource))
+  const notificationsSource = await fs.readFile(
+    path.join(projectRoot, 'src', 'services', 'notifications.ts'), 'utf8')
+  check('la notificacion de aviso completado de la web caduca a la hora',
+    /COMPLETED_ALERT_TTL_MS = 60 \* 60 \* 1000/.test(notificationsSource)
+      && notificationsSource.includes('rememberCompletedAlert(id)')
+      && notificationsSource.includes('export async function purgeCompletedAlerts()')
+      && mainSource.includes('void purgeCompletedAlerts()'))
+
   // Puntualidad en segundo plano: sin esto, medir exigia dejar la app delante
   // durante toda la franja.
   check('el servicio recibe tambien los controles de puntualidad',
@@ -882,8 +899,21 @@ async function main() {
       finishBody.includes('"Siguiente bus"') && finishBody.includes('renewIntent(job, summaryId)'))
     check('sin pulsarlo, el aviso completado se retira del servicio',
       finishBody.includes('jobs.remove(job);'))
-    check('con la app cerrada, el aviso completado no se revive al abrirla',
-      finishBody.includes('rememberStopped(job.id)'))
+    // El cierre se apunta en disco SIEMPRE, no solo sin nadie escuchando: con
+    // el plugin enganchado pero el WebView congelado (o el proceso muerto
+    // enseguida) el evento `finished` se pierde y la app lo revivia al abrirse.
+    check('con la app cerrada o congelada, el aviso completado no se revive al abrirla',
+      finishBody.includes('rememberFinished(this, job.id, System.currentTimeMillis());')
+        && !/if \(\w+ == null\) \{[\s\S]*?rememberFinished\(/.test(finishBody)
+        && !/listener[\s\S]*?rememberFinished\(/.test(finishBody)
+        && plugin.includes('public void takeFinished(PluginCall call)')
+        && service.includes('forgetFinished(this, job.id);')
+        && mainSource.includes('await BusTracking.takeFinished()'))
+    // Un "Siguiente bus" pulsado con la app cerrada y luego terminado o
+    // detenido no debe crearse otra vez al recoger los renovados.
+    check('un renovado que termina o se detiene no se recoge al abrir',
+      finishBody.includes('forgetRenewed(this, job.id);')
+        && /private void stopJob\(String jobId\) \{[\s\S]*?forgetRenewed\(this, jobId\);/.test(service))
     check('el boton arranca el servicio aunque este apagado',
       service.includes('PendingIntent.getForegroundService(this, requestCode, intent, flags)')
         && service.includes('return renewJob(intent);'))
