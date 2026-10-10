@@ -34,6 +34,7 @@ import {
   isNative,
   notificationId,
   onNextBusAction,
+  purgeCompletedAlerts,
   showArrivalAlert,
   showOngoingNotification,
   showTrackingNotification,
@@ -277,6 +278,13 @@ interface BusTrackingPlugin {
   takePasses(): Promise<{ passes: NativePass[] }>
   /** Avisos renovados con "Siguiente bus" con la app cerrada. Se leen una sola vez. */
   takeRenewed(): Promise<{ jobs: RenewedJob[] }>
+  /**
+   * Avisos completados por el servicio, con o sin la app escuchando (el evento
+   * `arrivalUpdate` con `finished` se pierde si el WebView estaba congelado).
+   * Se leen una sola vez. `at` es el instante (epoch ms) del cierre. Un APK
+   * antiguo no lo tiene.
+   */
+  takeFinished(): Promise<{ jobs: { id: string, at: number }[] }>
   addListener(
     event: 'arrivalUpdate',
     handler: (update: TrackingUpdate) => void,
@@ -468,6 +476,7 @@ async function bootstrap(): Promise<void> {
   // sale ahora: la red ya esta cargada y hay lineas que ofrecer.
   void checkWidgetTap()
   void onWidgetStopTap(() => void checkWidgetTap())
+  void purgeCompletedAlerts()
   await restoreTrackingService()
 
   window.setInterval(tick, TICK_MS)
@@ -491,6 +500,10 @@ async function bootstrap(): Promise<void> {
       void checkWidgetTap()
       // Mientras la app no estaba delante, quien medía era el servicio nativo.
       void drainNativePasses()
+      // Y lo que el servicio cerró, detuvo o renovó con la web congelada.
+      void reconcileNativeTrackings()
+      // Las notificaciones de "aviso completado" de la web que ya cumplieron sus 30 minutos.
+      void purgeCompletedAlerts()
       void syncPermissions()
       // El permiso de instalacion se concede en una pantalla de ajustes DEL
       // SISTEMA, y nada dentro de la app avisa de que ha cambiado. Sin releerlo
@@ -1877,6 +1890,126 @@ async function skipTracking(id: string): Promise<void> {
   render()
 }
 
+/** Evita que dos recogidas de cambios del servicio se pisen (reapertura y vuelta a primer plano). */
+let collectingNativeChanges = false
+
+/**
+ * Quita los avisos que se detuvieron desde su notificación, quizá con la app
+ * cerrada. Un aviso detenido NO se revive: antes se reabría solo al entrar en la
+ * app, y la notificación que acababa de quitarse volvía a aparecer.
+ *
+ * Devuelve si ha cambiado algo; quien llama sincroniza y repinta.
+ */
+async function applyStoppedTrackings(): Promise<boolean> {
+  const status = await BusTracking.status()
+  let changed = false
+
+  if (status.stopped.length > 0) {
+    const removed = state.trackings.filter((job) => status.stopped.includes(job.id))
+    if (removed.length > 0) {
+      state.trackings = state.trackings.filter((job) => !status.stopped.includes(job.id))
+      for (const job of removed) {
+        delete state.trackingStopsAway[job.id]
+      }
+      persistTrackings()
+      changed = true
+      log('info', 'aviso', `${removed.length} aviso(s) detenidos desde la notificación.`)
+    }
+    await BusTracking.clearStopped()
+  }
+
+  return changed
+}
+
+/**
+ * Cierra los avisos que el servicio completó mientras la web no se enteraba.
+ *
+ * El evento `arrivalUpdate` con `finished` solo llega si el WebView está vivo en
+ * ese instante; con la app en segundo plano puede estar congelado, o el proceso
+ * morir después. Sin esto el aviso volvía a la pestaña Seguir con la cuenta
+ * antigua y `syncTrackingService()` lo revivía en el servicio.
+ *
+ * `at` evita borrar un aviso NUEVO de la misma parada y línea creado después del
+ * cierre. No saca aviso ni toast: la notificación de "completado" ya la publicó
+ * el servicio, y un "ya ha pasado" al abrir la app, horas después, sería ruido.
+ *
+ * Devuelve si ha cambiado algo; quien llama sincroniza y repinta.
+ */
+async function applyFinishedTrackings(): Promise<boolean> {
+  let finished: { id: string, at: number }[] = []
+  try {
+    finished = (await BusTracking.takeFinished()).jobs ?? []
+  } catch {
+    // APK anterior sin este método: queda la cuenta de `busesSeen` al arrancar.
+    return false
+  }
+
+  let changed = false
+
+  for (const { id, at } of finished) {
+    const job = trackingById(id)
+    if (!job || job.startedAt > at) {
+      continue
+    }
+
+    state.trackings = state.trackings.filter((item) => item.id !== id)
+    delete state.trackingStopsAway[id]
+    persistTrackings()
+    await cancelNotification(notificationId(id))
+    changed = true
+    log('info', 'aviso', `Aviso completado en segundo plano: línea ${job.lineId} en ${job.stopName}.`)
+  }
+
+  return changed
+}
+
+/**
+ * Pone la web al día de lo que el servicio hizo sin ella: bajas desde la
+ * notificación, cierres y renovados con "Siguiente bus".
+ *
+ * El orden importa: los cierres van ANTES de los renovados, para que un
+ * "Siguiente bus" pulsado después cree el aviso nuevo en vez de ser borrado por
+ * el cierre anterior. Devuelve si ha cambiado algo.
+ */
+async function collectNativeTrackingChanges(): Promise<boolean> {
+  let changed = await applyStoppedTrackings()
+
+  if (await applyFinishedTrackings()) {
+    changed = true
+  }
+
+  const { jobs: renewed } = await BusTracking.takeRenewed()
+  for (const job of renewed) {
+    await renewTracking(job, false)
+    changed = true
+  }
+
+  return changed
+}
+
+/**
+ * Al volver a primer plano: reaplica lo que el servicio hizo con la web dormida
+ * y deja servicio y pantalla de acuerdo.
+ */
+async function reconcileNativeTrackings(): Promise<void> {
+  if (!isNative() || collectingNativeChanges) {
+    return
+  }
+
+  collectingNativeChanges = true
+  try {
+    if (await collectNativeTrackingChanges()) {
+      await syncTrackingService()
+      render()
+    }
+  } catch (error) {
+    // Plugin ausente o servicio no disponible: la reapertura ya lo registró.
+    log('warn', 'aviso', `No se pudo leer lo ocurrido en segundo plano: ${errorMessage(error)}`)
+  } finally {
+    collectingNativeChanges = false
+  }
+}
+
 /**
  * Reconecta la interfaz con el servicio nativo tras reabrir la app, para que la
  * pantalla y las notificaciones no cuenten historias distintas.
@@ -2087,26 +2220,14 @@ async function restoreTrackingService(): Promise<void> {
       void renewTracking(update)
     })
 
-    const status = await BusTracking.status()
-
-    // Un aviso que se detuvo desde su notificación NO se revive: antes se
-    // reabría solo al entrar en la app, y la notificación que acababa de
-    // quitarse volvía a aparecer.
-    if (status.stopped.length > 0) {
-      const removed = state.trackings.filter((job) => status.stopped.includes(job.id))
-      if (removed.length > 0) {
-        state.trackings = state.trackings.filter((job) => !status.stopped.includes(job.id))
-        persistTrackings()
-        log('info', 'aviso', `${removed.length} aviso(s) detenidos desde la notificación.`)
-      }
-      await BusTracking.clearStopped()
-    }
-
-    // Y al revés: los renovados con "Siguiente bus" con la app cerrada. Van
-    // antes de sincronizar, que si no los quitaría del servicio.
-    const { jobs: renewed } = await BusTracking.takeRenewed()
-    for (const job of renewed) {
-      await renewTracking(job, false)
+    // Bajas y cierres que ocurrieron sin que la web se enterase, y los renovados
+    // con "Siguiente bus": todo antes de sincronizar, que si no los quitaría (o
+    // revivía) en el servicio.
+    collectingNativeChanges = true
+    try {
+      await collectNativeTrackingChanges()
+    } finally {
+      collectingNativeChanges = false
     }
 
     // Los avisos que ya vieron sus tres autobuses con la app cerrada se cierran
