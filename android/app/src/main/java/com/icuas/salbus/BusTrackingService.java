@@ -282,7 +282,7 @@ public class BusTrackingService extends Service {
     private static final String PREF_FINISHED = "finishedJobs";
 
     /** Tras esto el aviso de "completado" se retira solo de la bandeja. */
-    private static final long COMPLETED_TIMEOUT_MS = 60 * 60 * 1000L;
+    private static final long COMPLETED_TIMEOUT_MS = 30 * 60 * 1000L;
 
     /**
      * Pasos de puntualidad detectados que la app aun no ha recogido.

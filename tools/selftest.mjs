@@ -821,8 +821,8 @@ async function main() {
       && /visibilitychange[\s\S]*?reconcileNativeTrackings\(\)/.test(mainSource))
   const notificationsSource = await fs.readFile(
     path.join(projectRoot, 'src', 'services', 'notifications.ts'), 'utf8')
-  check('la notificacion de aviso completado de la web caduca a la hora',
-    /COMPLETED_ALERT_TTL_MS = 60 \* 60 \* 1000/.test(notificationsSource)
+  check('la notificacion de aviso completado de la web caduca a los 30 minutos',
+    /COMPLETED_ALERT_TTL_MS = 30 \* 60 \* 1000/.test(notificationsSource)
       && notificationsSource.includes('rememberCompletedAlert(id)')
       && notificationsSource.includes('export async function purgeCompletedAlerts()')
       && mainSource.includes('void purgeCompletedAlerts()'))

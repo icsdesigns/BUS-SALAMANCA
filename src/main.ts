@@ -502,7 +502,7 @@ async function bootstrap(): Promise<void> {
       void drainNativePasses()
       // Y lo que el servicio cerró, detuvo o renovó con la web congelada.
       void reconcileNativeTrackings()
-      // Las notificaciones de "aviso completado" de la web que ya cumplieron su hora.
+      // Las notificaciones de "aviso completado" de la web que ya cumplieron sus 30 minutos.
       void purgeCompletedAlerts()
       void syncPermissions()
       // El permiso de instalacion se concede en una pantalla de ajustes DEL

@@ -19,12 +19,12 @@ const CHANNEL_ID = 'salbus-seguimiento'
 const SMALL_ICON = 'ic_stat_salbus'
 
 /**
- * Cuanto vive la notificacion de "aviso completado": pasada la hora ya no dice
+ * Cuanto vive la notificacion de "aviso completado": pasados 30 minutos ya no dice
  * nada util (el autobus pasó hace rato) y solo ensucia la barra. El servicio
  * nativo hace lo mismo con su propia notificacion (`setTimeoutAfter`); esta es la
  * de la web, la que sale cuando no hay servicio.
  */
-export const COMPLETED_ALERT_TTL_MS = 60 * 60 * 1000
+export const COMPLETED_ALERT_TTL_MS = 30 * 60 * 1000
 
 /** Donde se apuntan las notificaciones completadas, para limpiarlas tras cerrar la app. */
 const COMPLETED_ALERTS_KEY = 'salbus.completedAlerts'
@@ -263,7 +263,7 @@ export async function showArrivalAlert(
 }
 
 /* ------------------------------------------------------------------ *
- * Avisos completados: caducan a la hora                                *
+ * Avisos completados: caducan a los 30 minutos                        *
  * ------------------------------------------------------------------ */
 
 interface CompletedAlert {
@@ -296,10 +296,10 @@ function writeCompletedAlerts(alerts: CompletedAlert[]): void {
   }
 }
 
-/** Apunta el aviso completado y programa su retirada a la hora. */
+/** Apunta el aviso completado y programa su retirada a los 30 minutos. */
 function rememberCompletedAlert(id: number): void {
   const at = Date.now()
-  // El mismo id se reutiliza: el aviso nuevo sustituye al anterior y reinicia la hora.
+  // El mismo id se reutiliza: el aviso nuevo sustituye al anterior y reinicia los 30 minutos.
   writeCompletedAlerts([...readCompletedAlerts().filter((item) => item.notificationId !== id), { notificationId: id, at }])
   scheduleCompletedAlertExpiry(id, COMPLETED_ALERT_TTL_MS)
 }
@@ -333,7 +333,7 @@ function scheduleCompletedAlertExpiry(id: number, delayMs: number): void {
 }
 
 /**
- * Retira las notificaciones de aviso completado que ya tienen una hora o mas y
+ * Retira las notificaciones de aviso completado que ya tienen 30 minutos o mas y
  * las borra de la lista. Se llama al arrancar y al volver a primer plano: con la
  * app cerrada el temporizador no corre, y esta es la ocasion de ponerse al dia.
  * Las que aun no caducan reprograman su temporizador por lo que les queda.
