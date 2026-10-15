@@ -1,0 +1,5 @@
+{"type":"FeatureCollection","features":[
+{"type":"Feature","properties":{"ID":"1","Name":"VAZQUEZ CORONADO","fecha_inicio":"14/07/2026","fecha_fin":"01/09/2026"},"geometry":{"type":"LineString","coordinates":[[-5.6626493,40.9679111,0.0],[-5.6622322,40.9677257,0.0],[-5.661744,40.967507,0.0]]}},
+{"type":"Feature","properties":{"ID":"2","Name":"SAN FELIPE (+IGNACIO DE LOYOLA+NAZARET+SAN LUCAS)","fecha_inicio":"27/07/2026","fecha_fin":"30/09/2026"},"geometry":{"type":"LineString","coordinates":[[-5.669176,40.9768006,0.0],[-5.6692237,40.9774338,0.0],[-5.6698138,40.9777092,0.0],[-5.6696958,40.9776403,0.0],[-5.6696851,40.9768425,0.0],[-5.6696905,40.9776525,0.0],[-5.6694115,40.9775229,0.0],[-5.6693096,40.9760932,0.0],[-5.669331,40.9756842,0.0]]}},
+{"type":"Feature","properties":{"ID":"5","Name":"LIBREROS","fecha_inicio":"28/07/2027","fecha_fin":"15/09/2027"},"geometry":{"type":"LineString","coordinates":[[-5.6666289,40.9624432,0.0],[-5.6683026,40.9599641,0.0]]}}
+]}

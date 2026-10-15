@@ -84,6 +84,7 @@ async function main() {
     'routing.ts',
     'streets.ts',
     'bus-position.ts',
+    'traffic-cuts.ts',
   ])
 
   const { parseStopFeed } = await import(pathToUrl(path.join(build, 'arrival-parser.js')))
@@ -1923,6 +1924,283 @@ async function main() {
       widgetTs.includes('Widget.pendingStop()')
         && main.includes('pendingWidgetStopId = null'))
   }
+
+  section('14 · Cortes de tráfico del Ayuntamiento')
+
+  {
+    const cutsApi = await import(pathToUrl(path.join(build, 'traffic-cuts.js')))
+    const {
+      parseCutDate, parseTrafficCuts, datedCut, relevantCuts, lineImpacts, decodeLineShapes,
+      formatCutName, readCachedCuts, writeCachedCuts,
+    } = cutsApi
+
+    const sampleText = await fs.readFile(
+      path.join(projectRoot, 'tools', 'fixtures', 'cortes-trafico-muestra.geojson'), 'utf8')
+    const sample = parseTrafficCuts(sampleText)
+
+    // Las fechas se construyen con el constructor local: el día civil es el del
+    // dispositivo, así que la prueba no puede depender de la zona horaria.
+    const day = (y, m, d, h = 12) => new Date(y, m - 1, d, h, 30)
+
+    // --- Fechas dd/MM/yyyy ---------------------------------------------
+    check('lee una fecha dd/MM/yyyy', parseCutDate('14/07/2026') === '2026-07-14')
+    check('admite día y mes sin cero', parseCutDate('1/9/2026') === '2026-09-01')
+    check('rechaza un día que no existe', parseCutDate('31/02/2026') === null && parseCutDate('29/02/2026') === null)
+    check('acepta el 29 de febrero bisiesto', parseCutDate('29/02/2028') === '2028-02-29')
+    check('rechaza otros formatos y vacíos',
+      parseCutDate('2026-07-14') === null && parseCutDate('') === null
+        && parseCutDate(undefined) === null && parseCutDate('14/07/26') === null)
+
+    // --- Parseo de la muestra real -------------------------------------
+    check('la muestra trae tres cortes', sample.length === 3, String(sample.length))
+    check('lee id, nombre y fechas',
+      sample[0].id === '1' && sample[0].name === 'VAZQUEZ CORONADO'
+        && sample[0].start === '2026-07-14' && sample[0].end === '2026-09-01',
+      JSON.stringify(sample[0]))
+    check('las coordenadas quedan como [lat, lon]',
+      sample[0].parts[0][0][0] === 40.9679111 && sample[0].parts[0][0][1] === -5.6626493
+        && sample[0].parts[0].length === 3)
+    check('conserva la geometría que va y vuelve sobre sí misma', sample[1].parts[0].length === 9)
+
+    check('salta un elemento sin fechas reales sin tirar los demás', (() => {
+      const body = JSON.stringify({
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', properties: { ID: '1', Name: 'A', fecha_inicio: '31/02/2026', fecha_fin: '01/03/2026' },
+            geometry: { type: 'LineString', coordinates: [[-5.66, 40.97, 0], [-5.65, 40.97, 0]] } },
+          { type: 'Feature', properties: { ID: '2', Name: 'B', fecha_inicio: '10/03/2026', fecha_fin: '01/03/2026' },
+            geometry: { type: 'LineString', coordinates: [[-5.66, 40.97, 0], [-5.65, 40.97, 0]] } },
+          { type: 'Feature', properties: { ID: '3', Name: 'C', fecha_inicio: '01/03/2026', fecha_fin: '02/03/2026' },
+            geometry: null },
+          { type: 'Feature', properties: { ID: '4', Name: ' D  E ', fecha_inicio: '01/03/2026', fecha_fin: '02/03/2026' },
+            geometry: { type: 'MultiLineString', coordinates: [[[-5.66, 40.97], [-5.65, 40.97]], [[-5.64, 40.97], [-5.63, 40.97]]] } },
+        ],
+      })
+      const parsed = parseTrafficCuts(`﻿${body}`)
+      return parsed.length === 1 && parsed[0].id === '4' && parsed[0].name === 'D E' && parsed[0].parts.length === 2
+    })())
+    check('un documento que no es un FeatureCollection falla y no se toma por «sin cortes»', (() => {
+      try {
+        parseTrafficCuts('<html>Cloudflare</html>')
+        return false
+      } catch {
+        try {
+          parseTrafficCuts('{"type":"Other"}')
+          return false
+        } catch {
+          return true
+        }
+      }
+    })())
+    check('un FeatureCollection vacío es un resultado válido', parseTrafficCuts('{"type":"FeatureCollection","features":[]}').length === 0)
+
+    // --- Activos / próximos / terminados -------------------------------
+    const [vazquez, sanFelipe, libreros] = sample
+    check('el primer día del corte ya está activo', datedCut(vazquez, day(2026, 7, 14, 0)).status === 'active')
+    check('el último día cuenta entero (hasta las 23:59)',
+      datedCut(vazquez, day(2026, 9, 1, 23)).status === 'active' && datedCut(vazquez, day(2026, 9, 1, 23)).daysLeft === 1)
+    check('al día siguiente del fin ya ha terminado', datedCut(vazquez, day(2026, 9, 2, 0)).status === 'past')
+    check('el día antes de empezar es próximo',
+      datedCut(sanFelipe, day(2026, 7, 26)).status === 'upcoming' && datedCut(sanFelipe, day(2026, 7, 26)).daysToStart === 1)
+    check('a 7 días todavía es próximo', datedCut(sanFelipe, day(2026, 7, 20)).status === 'upcoming')
+    check('a 8 días es posterior y no se enseña', datedCut(sanFelipe, day(2026, 7, 19)).status === 'later')
+    check('los días que quedan se cuentan con hoy', datedCut(vazquez, day(2026, 8, 31)).daysLeft === 2)
+
+    {
+      const onJuly20 = relevantCuts(sample, day(2026, 7, 20))
+      check('relevantes: activo primero, luego próximo, sin los lejanos',
+        onJuly20.map((item) => `${item.cut.id}:${item.status}`).join() === '1:active,2:upcoming',
+        onJuly20.map((item) => `${item.cut.id}:${item.status}`).join())
+      check('hoy (2026-10-15) ninguno de los tres cortes de la muestra es relevante',
+        relevantCuts(sample, day(2026, 10, 15)).length === 0)
+      check('el orden de los activos es por fecha de fin', (() => {
+        const copy = (id, end) => ({ ...vazquez, id, end })
+        const order = relevantCuts([copy('x', '2026-09-20'), copy('y', '2026-08-30'), copy('z', '2026-09-05')], day(2026, 8, 1))
+        return order.map((item) => item.cut.id).join() === 'y,z,x'
+      })())
+    }
+
+    // --- Caché en localStorage -----------------------------------------
+    {
+      const store = new Map()
+      const previousWindow = globalThis.window
+
+      globalThis.window = undefined
+      check('sin almacenamiento disponible la caché no lanza', readCachedCuts() === null
+        && writeCachedCuts(sample, 1) === undefined)
+
+      globalThis.window = {
+        localStorage: {
+          getItem: (key) => store.get(key) ?? null,
+          setItem: (key, value) => { store.set(key, value) },
+          removeItem: (key) => { store.delete(key) },
+        },
+      }
+
+      check('sin nada guardado no hay caché', readCachedCuts() === null)
+      writeCachedCuts(sample, 1234, day(2026, 8, 15))
+      const cached = readCachedCuts()
+      check('guarda y recupera el último resultado bueno',
+        cached !== null && cached.fetchedAt === 1234 && cached.cuts.length === 3
+          && cached.cuts[2].parts[0].length === 2)
+      writeCachedCuts(sample, 5678, day(2026, 10, 15))
+      check('no guarda los cortes que ya terminaron',
+        readCachedCuts().cuts.map((cut) => cut.id).join() === '5', JSON.stringify(readCachedCuts().cuts.map((cut) => cut.id)))
+      store.set('salbus.trafficCuts', '{esto no es json')
+      check('una caché corrupta se ignora', readCachedCuts() === null)
+      store.set('salbus.trafficCuts', JSON.stringify({ v: 9, fetchedAt: 1, cuts: [] }))
+      check('una caché de otra versión se ignora', readCachedCuts() === null)
+
+      globalThis.window = previousWindow
+    }
+
+    // --- Nombres -------------------------------------------------------
+    check('suaviza las mayúsculas y deja las partículas en minúscula',
+      formatCutName('SAN FELIPE (+IGNACIO DE LOYOLA+NAZARET+SAN LUCAS)') === 'San Felipe (+Ignacio de Loyola+Nazaret+San Lucas)',
+      formatCutName('SAN FELIPE (+IGNACIO DE LOYOLA+NAZARET+SAN LUCAS)'))
+    check('una partícula al principio lleva mayúscula', formatCutName('LA ALAMEDA') === 'La Alameda')
+
+    // --- Afectación: casos sintéticos ----------------------------------
+    const ORIGIN = [40.97, -5.66]
+    const COS = Math.cos((ORIGIN[0] * Math.PI) / 180)
+    // Metros (este, norte) a [lat, lon] cerca de un punto fijo.
+    const at = (east, north) => [ORIGIN[0] + north / 111195, ORIGIN[1] + east / (111195 * COS)]
+    const poly = (...points) => points.map(([east, north]) => at(east, north))
+    const shapeOf = (lineId, points, directionKeys = []) => ({ lineId, directionKeys, points: poly(...points) })
+    const cutOf = (...points) => ({
+      id: 't', name: 'CALLE DE PRUEBA', start: '2026-10-01', end: '2026-10-31', parts: [poly(...points)],
+    })
+    const idsOf = (impacts) => impacts.map((impact) => impact.lineId).join()
+
+    // Calle de 200 m de norte a sur.
+    const street = cutOf([0, 0], [0, 200])
+
+    {
+      const impacts = lineImpacts(street, [
+        shapeOf('A', [[10, -50], [10, 250]], ['A|uno']),
+        shapeOf('B', [[200, -50], [200, 250]]),
+        shapeOf('C', [[-10, 250], [-10, -50]]),
+        shapeOf('D', [[10, 205], [10, 400]]),
+        shapeOf('E', [[-400, 100], [400, 100]]),
+        shapeOf('F', [[-400, 100], [-30, 100]]),
+        shapeOf('G', [[-15, -50], [60, 250]]),
+        shapeOf('H', [[-300, 300], [300, -100]]),
+      ])
+
+      check('una línea paralela a 10 m del corte sale afectada',
+        impacts.some((impact) => impact.lineId === 'A' && impact.alongMeters >= 190), JSON.stringify(impacts))
+      check('una línea paralela a 200 m no sale afectada', !impacts.some((impact) => impact.lineId === 'B'))
+      check('el sentido de la marcha no importa (paralela en sentido contrario)',
+        impacts.some((impact) => impact.lineId === 'C'))
+      check('rozar el extremo del corte (menos de 30 m de coincidencia) no basta', !impacts.some((impact) => impact.lineId === 'D'))
+      check('una calle que cruza el corte en perpendicular lo atraviesa y sale afectada',
+        impacts.some((impact) => impact.lineId === 'E' && impact.crossing && impact.alongMeters === 0))
+      check('un corte que no llega al eje de la línea que pasa por delante no la afecta',
+        !impacts.some((impact) => impact.lineId === 'F'))
+      check('una línea que corta en diagonal (20°) cuenta como la misma calle',
+        impacts.some((impact) => impact.lineId === 'G' && impact.alongMeters >= 100))
+      check('una línea a 45° que cruza el corte se marca como cruce, no como paralela',
+        impacts.some((impact) => impact.lineId === 'H' && impact.crossing && impact.alongMeters === 0))
+      check('los sentidos del trazado afectado se conservan',
+        impacts.find((impact) => impact.lineId === 'A')?.directionKeys.join() === 'A|uno')
+    }
+
+    check('las líneas salen ordenadas por número, no como texto', (() => {
+      const impacts = lineImpacts(street, [
+        shapeOf('10', [[5, -20], [5, 220]]),
+        shapeOf('9', [[-5, -20], [-5, 220]]),
+        shapeOf('2', [[8, -20], [8, 220]]),
+      ])
+      return idsOf(impacts) === '2,9,10'
+    })())
+
+    check('dos trayectos de la misma línea dan una sola entrada con los dos sentidos', (() => {
+      const impacts = lineImpacts(street, [
+        shapeOf('7', [[10, -20], [10, 220]], ['7|uno']),
+        shapeOf('7', [[-10, 220], [-10, -20]], ['7|dos']),
+      ])
+      return impacts.length === 1 && impacts[0].directionKeys.join() === '7|uno,7|dos'
+    })())
+
+    {
+      // Una calle corta (30 m) no puede exigir los 30 m de la larga.
+      const short = cutOf([0, 0], [0, 30])
+      check('en un corte de 30 m basta con cubrir su mitad',
+        idsOf(lineImpacts(short, [shapeOf('S', [[10, -40], [10, 70]])])) === 'S')
+      check('un corte corto tampoco marca una línea que apenas lo roza',
+        idsOf(lineImpacts(short, [shapeOf('S', [[10, 45], [10, 100]])])) === '')
+
+      // Geometría que va y vuelve sobre sí misma (como el corte 2 de la muestra):
+      // los metros se cuentan sobre la línea, no sobre el corte, y no se duplican
+      // (100 m de calle + el margen de 25 m a cada lado, acotado por el trazado).
+      const there = cutOf([0, 0], [0, 100], [0, 0], [0, 100])
+      const impacts = lineImpacts(there, [shapeOf('V', [[10, -20], [10, 120]])])
+      check('una geometría que va y vuelve no cuenta dos veces',
+        impacts.length === 1 && impacts[0].alongMeters >= 130 && impacts[0].alongMeters <= 150,
+        JSON.stringify(impacts))
+    }
+
+    check('un corte sin geometría no afecta a nadie',
+      lineImpacts({ ...street, parts: [] }, [shapeOf('A', [[0, 0], [0, 100]])]).length === 0)
+
+    // --- Afectación con el trazado real de las líneas ------------------
+    {
+      const payload = JSON.parse(
+        await fs.readFile(path.join(projectRoot, 'public', 'data', 'line-shapes.json'), 'utf8'))
+      const network = JSON.parse(
+        await fs.readFile(path.join(projectRoot, 'public', 'data', 'network.json'), 'utf8'))
+      const shapes = decodeLineShapes(payload)
+
+      const lineIds = new Set(shapes.map((shape) => shape.lineId))
+      check('hay trazado para las 27 líneas de la red',
+        network.lines.every((line) => lineIds.has(line.lineId)) && lineIds.size === network.lines.length,
+        `${lineIds.size} líneas con trazado`)
+      check('todos los puntos caen en Salamanca',
+        shapes.every((shape) => shape.points.every(([lat, lon]) => lat > 40.9 && lat < 41.05 && lon > -5.75 && lon < -5.6)))
+      const directionKeys = new Set(network.lines.flatMap((line) => line.directions.map((direction) => direction.key)))
+      check('los sentidos del trazado existen en la red oficial',
+        shapes.every((shape) => shape.directionKeys.every((key) => directionKeys.has(key))))
+      check('cada sentido de la red tiene al menos un trazado',
+        Array.from(directionKeys).every((key) => shapes.some((shape) => shape.directionKeys.includes(key))))
+
+      for (const cut of sample) {
+        const impacts = lineImpacts(cut, shapes)
+        check(`corte real «${cut.name.slice(0, 22)}»: ninguna línea pasa a menos de 25 m`,
+          impacts.length === 0, idsOf(impacts))
+      }
+
+      // Un corte puesto a mano sobre el trazado real de la línea 4 la tiene que encontrar.
+      const real = shapes.find((shape) => shape.directionKeys.includes('4|uno'))
+      const middle = Math.floor(real.points.length / 2)
+      const along = cutOf([0, 0], [1, 1])
+      along.parts = [real.points.slice(middle, middle + 4)]
+      check('un corte sobre el trazado real de la línea 4 la marca',
+        lineImpacts(along, shapes).some((impact) => impact.lineId === '4'), idsOf(lineImpacts(along, shapes)))
+
+      // Y el mismo corte cinco kilómetros al norte, fuera de la ciudad, no marca nada.
+      const far = cutOf([0, 0], [1, 1])
+      far.parts = [along.parts[0].map(([lat, lon]) => [lat + 0.05, lon])]
+      check('el mismo corte lejos de las líneas no marca ninguna', lineImpacts(far, shapes).length === 0)
+    }
+
+    // --- La integración que espera la app ------------------------------
+    {
+      const viewSource = await fs.readFile(path.join(projectRoot, 'src', 'traffic-view.ts'), 'utf8')
+      check('traffic-view exporta las cuatro funciones acordadas',
+        /export function initTrafficCuts\(onChange: \(\) => void\): void/.test(viewSource)
+          && /export function refreshTrafficCuts\(\): void/.test(viewSource)
+          && /export function renderTrafficCutsNotice\(\): string/.test(viewSource)
+          && /export function renderTrafficCutsSection\(\): string/.test(viewSource))
+      const serviceSource = await fs.readFile(
+        path.join(projectRoot, 'src', 'services', 'traffic-cuts.ts'), 'utf8')
+      check('en Android la fuente se pide como texto con CapacitorHttp',
+        /CapacitorHttp\.get\(\{[\s\S]{0,400}responseType: 'text'/.test(serviceSource))
+      check('la caché envuelve el almacenamiento en try/catch',
+        /readCachedCuts[\s\S]{0,200}try \{[\s\S]*?catch/.test(serviceSource)
+          && /writeCachedCuts[\s\S]{0,400}try \{[\s\S]*?catch/.test(serviceSource))
+    }
+  }
+
 
   console.log(`\n${passed} correctas · ${failed} fallidas`)
   process.exitCode = failed > 0 ? 1 : 0

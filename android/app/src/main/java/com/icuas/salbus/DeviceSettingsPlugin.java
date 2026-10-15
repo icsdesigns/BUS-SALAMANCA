@@ -1,7 +1,9 @@
 package com.icuas.salbus;
 
 import android.content.Context;
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.os.Build;
 import android.net.Uri;
@@ -53,6 +55,34 @@ public class DeviceSettingsPlugin extends Plugin {
             ret.put("enabled", true);
         }
 
+        call.resolve(ret);
+    }
+
+    /**
+     * Tiene SALBUS ya concedido el permiso de ubicacion.
+     *
+     * Se pregunta sin pedirlo: Inicio solo enseña la parada mas cercana a quien ya
+     * lo tiene dado, y nunca debe sacar el dialogo por su cuenta. Desde la pagina
+     * esa consulta no es fiable dentro del WebView, que no siempre refleja el
+     * permiso de Android.
+     *
+     * Hacen falta LOS DOS permisos, precisa y aproximada: es lo mismo que exige
+     * Capacitor (BridgeWebChromeClient) antes de dar la ubicacion a la pagina.
+     * Con solo la aproximada, la primera llamada a `geolocation` lanzaria el
+     * dialogo del sistema para pedir la precisa, justo lo que Inicio no puede
+     * hacer.
+     */
+    @PluginMethod
+    public void hasLocationPermission(PluginCall call) {
+        JSObject ret = new JSObject();
+
+        boolean granted =
+            getContext().checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED
+            && getContext().checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+
+        ret.put("granted", granted);
         call.resolve(ret);
     }
 

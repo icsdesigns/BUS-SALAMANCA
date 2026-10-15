@@ -3569,3 +3569,133 @@ button.card-head {
   height: 14px;
   flex: none;
 }
+
+/* ==================================================================
+   Parada más cercana
+   ------------------------------------------------------------------
+   Tarjeta de Inicio encima de "Mis paradas". Es una tarjeta de parada
+   normal (`.stop-card`): aquí solo se añade la cabecera con la
+   distancia, el marcador de que es la cercana y la franja de próximos
+   autobuses de la tarjeta plegada.
+   ================================================================== */
+
+.nearest-head {
+  align-items: baseline;
+}
+
+.nearest-dist {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--brand-600);
+  white-space: nowrap;
+}
+
+.nearest-dist svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+/* Un filo de color a la izquierda la distingue de las guardadas sin
+   cambiar nada de su estructura. */
+.stop-card.is-nearest {
+  border-left: 3px solid var(--brand-500);
+}
+
+/* Guardar es la acción de esta tarjeta cuando la parada no es favorita:
+   con el color de marca, para que se vea que es lo que se puede hacer. */
+.stop-tools .mini-btn.is-save {
+  color: var(--brand-600);
+}
+
+/* Próximos autobuses con la tarjeta plegada: una sola fila, sin
+   recortar ni saltar de línea porque como mucho son tres. */
+.nearest-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 0 14px 11px;
+}
+
+.nearest-next-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.nearest-next-eta .eta-unit {
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.nearest-next-eta .eta-value {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.nearest-next-eta .eta-now {
+  font-size: 12px;
+}
+
+/* ==================================================================
+   Cortes de trafico
+   ================================================================== */
+
+/* El aviso de Inicio reutiliza .notice.is-warn: aqui solo se reparte el
+   contenido en columna y el boton de detalle se queda a la derecha. */
+.traffic-notice {
+  align-items: flex-start;
+}
+
+.traffic-notice-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.traffic-notice-copy strong {
+  font-size: 13.5px;
+  line-height: 1.3;
+}
+
+.traffic-notice .btn {
+  flex: none;
+}
+
+/* Un corte por fila dentro de una unica tarjeta, separados por una linea fina. */
+.traffic-cut {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+}
+
+.traffic-cut + .traffic-cut {
+  border-top: 1px solid var(--border);
+}
+
+.traffic-cut-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.traffic-cut-name {
+  min-width: 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.traffic-cut .chip-row {
+  margin-top: 0;
+}

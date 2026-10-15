@@ -20,7 +20,8 @@
     "test:punctuality": "node tools/punctuality-live.mjs",
     "android:release": "npm run build && npx cap sync android && cd android && gradlew assembleRelease",
     "version:show": "node tools/ci-version.mjs",
-    "data:streets": "node tools/fetch-street-graph.mjs"
+    "data:streets": "node tools/fetch-street-graph.mjs",
+    "data:shapes": "node tools/build-line-shapes.mjs"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",

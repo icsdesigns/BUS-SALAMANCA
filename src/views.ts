@@ -55,6 +55,7 @@ import type {
   StopFeed,
   TransitLine,
 } from './types'
+import { renderTrafficCutsNotice, renderTrafficCutsSection } from './traffic-view'
 import {
   arrivalTone,
   emptyState,
@@ -545,16 +546,148 @@ function renderInicio(): string {
       </div>
     </section>
 
+    ${renderTrafficCutsNotice()}
+
     ${state.trackings
       .filter((job) => job.active)
       .map((job) => renderTrackingBanner(job))
       .join('')}
 
+    ${renderNearestStop()}
+
     ${renderFavourites()}
   `
 }
 
+/* ------------------------------------------------------------------ *
+ * Parada más cercana (Inicio)                                          *
+ * ------------------------------------------------------------------ */
+
+/** Margen mínimo, en metros, que debe ganar otra parada para quitar el sitio a la actual. */
+const NEAREST_SWITCH_MIN_METERS = 25
+
+/** Tope de ese margen: con mucho error de GPS no se queda clavada una parada lejana. */
+const NEAREST_SWITCH_MAX_METERS = 60
+
+/** Parada que ocupa ahora la tarjeta, para que no cambie con cada lectura. */
+let nearestStopId: string | null = null
+
+/**
+ * La parada de TODA la red más cercana, o null si Inicio no debe enseñarla.
+ *
+ * Solo hay tarjeta cuando Inicio ya comprobó que el permiso está concedido y el
+ * servicio encendido (`geo.homeEnabled`): aquí nunca se pide nada ni se avisa de
+ * que falte. Sin ubicación, o sin ninguna parada a menos de 900 m, no hay tarjeta.
+ *
+ * Histéresis: las lecturas de GPS bailan unos metros y dos paradas de aceras
+ * opuestas están a veinte o treinta. Mientras la actual siga en el radio, otra
+ * solo la sustituye si gana por más que el error de la lectura. Y la que está
+ * desplegada no se quita de debajo de quien lee sus tiempos.
+ */
+export function homeNearestStop(): NearbyStop | null {
+  const geo = state.geo
+
+  if (!geo.homeEnabled || geo.blocked !== null || !geo.location) {
+    nearestStopId = null
+    return null
+  }
+
+  const nearby = nearestStopsForView()
+  const best = nearby[0]
+
+  if (!best) {
+    nearestStopId = null
+    return null
+  }
+
+  const current = nearestStopId
+    ? nearby.find((entry) => entry.stop.stopId === nearestStopId)
+    : undefined
+
+  if (current) {
+    const accuracy = Number.isFinite(geo.location.accuracy) ? geo.location.accuracy : 0
+    const margin = Math.min(
+      NEAREST_SWITCH_MAX_METERS,
+      Math.max(NEAREST_SWITCH_MIN_METERS, accuracy / 2),
+    )
+
+    if (current.stop.stopId === state.expandedStopId || current.meters - best.meters < margin) {
+      return current
+    }
+  }
+
+  nearestStopId = best.stop.stopId
+  return best
+}
+
+/**
+ * La tarjeta de la parada más cercana, encima de "Mis paradas".
+ *
+ * Es la misma tarjeta que una parada guardada —mismo desplegable, mismos
+ * tiempos, mismo motor de refresco—, con la distancia en la cabecera. Si la
+ * parada ya es favorita se enseña aquí y NO se repite en la lista de debajo
+ * (`renderFavourites`): dos tarjetas de la misma parada compartirían
+ * desplegable y pedirían los tiempos dos veces.
+ */
+function renderNearestStop(): string {
+  const nearest = homeNearestStop()
+  if (!nearest) {
+    return ''
+  }
+
+  const stopId = nearest.stop.stopId
+
+  return `
+    <div class="section-head nearest-head">
+      <h2>Parada más cercana</h2>
+      <span class="nearest-dist">${icon('crosshair')}${esc(formatMeters(nearest.meters))} · ${esc(
+        formatWalk(nearest.minutes),
+      )} andando</span>
+    </div>
+    ${renderStopCard(stopId, nearest)}
+  `
+}
+
+/**
+ * Los próximos autobuses de la parada más cercana, en una línea.
+ *
+ * La tarjeta plegada no enseña tiempos, pero esta es la que se mira de pie en la
+ * calle: tres líneas con sus minutos evitan tener que desplegarla para lo
+ * esencial. Sale de los datos que ya hay; no pide nada.
+ */
+function renderNearestNext(stopId: string): string {
+  const feed = feedOf(stopId)
+  if (!feed || feed.status === 'error' || feed.arrivals.length === 0) {
+    return ''
+  }
+
+  const seen = new Set<string>()
+  const next = [...feed.arrivals]
+    .sort((left, right) => liveMinutes(left) - liveMinutes(right))
+    .filter((arrival) => !seen.has(arrival.lineId) && Boolean(seen.add(arrival.lineId)))
+    .slice(0, 3)
+
+  return `
+    <div class="nearest-next" aria-label="Próximos autobuses">
+      ${next
+        .map(
+          (arrival) => `
+            <span class="nearest-next-item">${lineChip(
+              arrival.lineId,
+              lineColor(arrival.lineId),
+              'sm',
+            )}<span class="nearest-next-eta">${renderEta(arrival)}</span></span>`,
+        )
+        .join('')}
+    </div>
+  `
+}
+
 function renderFavourites(): string {
+  // La parada más cercana, si es favorita, ya está dibujada arriba.
+  const shownNearestId = homeNearestStop()?.stop.stopId ?? null
+  const listed = state.favourites.filter((favourite) => favourite.stopId !== shownNearestId)
+
   if (state.favourites.length === 0) {
     return `
       <section class="card"><div class="card-body">
@@ -575,7 +708,11 @@ function renderFavourites(): string {
         ${icon('plus')} Añadir
       </button>
     </div>
-    ${state.favourites.map((favourite) => renderFavouriteCard(favourite.stopId)).join('')}
+    ${
+      listed.length === 0
+        ? '<p class="text-tiny">Tu única parada guardada es la más cercana, justo encima.</p>'
+        : listed.map((favourite) => renderStopCard(favourite.stopId)).join('')
+    }
   `
 }
 
@@ -1376,7 +1513,8 @@ function renderStopDialog(): string {
  * ------------------------------------------------------------------ */
 
 /**
- * Una parada guardada.
+ * Una parada guardada, o la más cercana a ti (`nearest`), que es la misma
+ * tarjeta con otro botón: guardarla en vez de renombrarla o quitarla.
  *
  * Plegada tiene que enseñar TODAS las líneas que pasan por ella —son lo que
  * identifica la parada de un vistazo— y todas las tarjetas plegadas tienen que
@@ -1394,8 +1532,9 @@ function renderStopDialog(): string {
  * tiempo, así que refrescar era pedirle a la fuente —que limita por IP— un dato
  * que nadie iba a ver.
  */
-function renderFavouriteCard(stopId: string): string {
+function renderStopCard(stopId: string, nearest?: NearbyStop): string {
   const feed = feedOf(stopId)
+  const saved = isFavourite(stopId)
   const expanded = state.expandedStopId === stopId
   const label = favouriteLabel(stopId, stopName(stopId))
   const lines = state.network?.getLinesForStop(stopId) ?? []
@@ -1406,7 +1545,7 @@ function renderFavouriteCard(stopId: string): string {
   const official = label === stopName(stopId) ? '' : stopName(stopId)
 
   return `
-    <section class="card stop-card${expanded ? ' is-expanded' : ''}" data-key="stop-${esc(stopId)}">
+    <section class="card stop-card${expanded ? ' is-expanded' : ''}${nearest ? ' is-nearest' : ''}" data-key="stop-${esc(stopId)}">
       <button
         class="stop-open"
         type="button"
@@ -1422,14 +1561,21 @@ function renderFavouriteCard(stopId: string): string {
       <div class="stop-meta">
         ${renderStopLines(stopId, lines)}
         <span class="stop-tools">
-          <button class="mini-btn" type="button" data-action="rename-stop" data-stop="${esc(
-            stopId,
-          )}" aria-label="Cambiar nombre">${icon('pencil')}</button>
-          <button class="mini-btn is-danger" type="button" data-action="remove-favourite" data-stop="${esc(
-            stopId,
-          )}" aria-label="Quitar parada">${icon('trash')}</button>
+          ${
+            saved
+              ? `<button class="mini-btn" type="button" data-action="rename-stop" data-stop="${esc(
+                  stopId,
+                )}" aria-label="Cambiar nombre">${icon('pencil')}</button>
+                <button class="mini-btn is-danger" type="button" data-action="remove-favourite" data-stop="${esc(
+                  stopId,
+                )}" aria-label="Quitar parada">${icon('trash')}</button>`
+              : `<button class="mini-btn is-save" type="button" data-action="toggle-favourite" data-stop="${esc(
+                  stopId,
+                )}" aria-label="Guardar parada">${icon('star')}</button>`
+          }
         </span>
       </div>
+      ${nearest && !expanded ? renderNearestNext(stopId) : ''}
 
       ${
         /*
@@ -2296,6 +2442,8 @@ function renderInfo(): string {
       ${renderInfoSegment('llegar', 'Cómo llegar', 'route')}
       ${renderInfoSegment('lineas', 'Información de líneas', 'clock')}
     </div>
+
+    ${renderTrafficCutsSection()}
 
     ${section === 'llegar' ? renderComoLlegar() : renderLineInfo()}
   `

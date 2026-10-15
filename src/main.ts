@@ -84,10 +84,12 @@ import {
 } from './state'
 import type { NetworkStop, StopFeed } from './types'
 import { patch } from './dom'
+import { initTrafficCuts, refreshTrafficCuts } from './traffic-view'
 import { esc, liveMinutes, readableTextColor } from './ui'
 import {
   describeArrival,
   describeStopsAway,
+  homeNearestStop,
   nearestStopsForView,
   renderApp,
   stopName,
@@ -314,6 +316,7 @@ interface BusTrackingPlugin {
  */
 interface DeviceSettingsPlugin {
   isLocationEnabled(): Promise<{ enabled: boolean }>
+  hasLocationPermission(): Promise<{ granted: boolean }>
   openLocationSettings(): Promise<void>
   openAppSettings(): Promise<void>
 }
@@ -463,6 +466,14 @@ async function bootstrap(): Promise<void> {
 
   render()
 
+  // Si la app abre en Inicio, la parada más cercana arranca ya (siempre que la
+  // ubicación esté activada de antes: nunca se pide).
+  void syncHomeLocation()
+
+  // Cortes de tráfico del Ayuntamiento: caché primero, red después; cada cambio
+  // repinta la pantalla.
+  initTrafficCuts(render)
+
   void setupPermissions()
   // Si la app se ha abierto pulsando una parada del widget, su hoja del aviso
   // sale ahora: la red ya esta cargada y hay lineas que ofrecer.
@@ -481,6 +492,12 @@ async function bootstrap(): Promise<void> {
       // No hay nada mas que parar: el aviso tiene que seguir vivo justamente
       // aquí, y su rastreo ya se reduce solo al perder la pantalla (el plan de
       // refresco mira `visibilityState`).
+      //
+      // Salvo la ubicación de Inicio: con la pantalla apagada nadie mira la
+      // parada más cercana, y un seguimiento vivo solo gastaría batería.
+      if (state.tab === 'inicio') {
+        stopWatchingLocation()
+      }
       return
     }
 
@@ -499,6 +516,11 @@ async function bootstrap(): Promise<void> {
       // La ubicación del teléfono también se enciende fuera de la app: si había
       // una búsqueda de paradas cercanas esperando por eso, arranca sola.
       void retryNearbyIfServiceBack()
+      // Y Inicio vuelve a comprobar, sin pedir nada, si la ubicación sigue
+      // activada: puede haberse apagado o concedido mientras estaba fuera.
+      void syncHomeLocation(true)
+      // Los cortes de tráfico se descargan de nuevo solo si ya toca.
+      refreshTrafficCuts()
       // Y se mira si hay versión nueva: abrir la app ES el momento de saberlo.
       void checkUpdateOnResume()
     }
@@ -1088,12 +1110,23 @@ function buildRefreshPlan(): RefreshEntry[] {
   // se están leyendo, así que se pide con prioridad y el repaso de las demás se
   // aparta hasta que se vuelva a plegar. Quien acaba de abrirla no puede
   // quedarse esperando detrás de nueve paradas que no está mirando.
+  //
+  // La parada más cercana (solo si la tarjeta está a la vista) entra por el mismo
+  // `add`, que indexa por parada: si además es favorita queda UNA sola entrada,
+  // con la frescura más exigente de las dos, y se pide una sola vez.
   if (state.tab === 'inicio') {
+    forgetHiddenExpandedStop()
+
     if (state.expandedStopId) {
       add(state.expandedStopId, FRESHNESS.focused, 'high')
     } else {
       for (const favourite of state.favourites) {
         add(favourite.stopId, FRESHNESS.visible)
+      }
+
+      const nearest = homeNearestStop()
+      if (nearest) {
+        add(nearest.stop.stopId, FRESHNESS.visible)
       }
     }
   }
@@ -1104,6 +1137,22 @@ function buildRefreshPlan(): RefreshEntry[] {
     }
     return left.maxAgeMs - right.maxAgeMs
   })
+}
+
+/**
+ * Olvida la parada desplegada de Inicio si ya no se dibuja en ningún sitio.
+ *
+ * Puede ser una favorita o la más cercana; esta última deja de estar a la vista si
+ * el usuario se aleja. Una parada desplegada que ya no se dibuja no puede seguir
+ * mandando en el plan de refresco —dejaría sin repasar las demás sin que nadie
+ * lea sus tiempos—, así que en ese caso se olvida.
+ */
+function forgetHiddenExpandedStop(): void {
+  const expanded = state.expandedStopId
+
+  if (expanded && !isFavourite(expanded) && homeNearestStop()?.stop.stopId !== expanded) {
+    state.expandedStopId = null
+  }
 }
 
 /**
@@ -1279,6 +1328,12 @@ function tick(): void {
   if (measuring && nativeMonitorIds.size > 0 && Date.now() - lastDrainAt >= AUTO_CYCLE_MS) {
     lastDrainAt = Date.now()
     void drainNativePasses()
+  }
+
+  // Quien apaga la ubicación con la app abierta no genera ningún evento: se
+  // vuelve a mirar de vez en cuando mientras Inicio está delante.
+  if (state.tab === 'inicio' && Date.now() - homeCheckedAt >= HOME_RECHECK_MS) {
+    void syncHomeLocation()
   }
 
   if (refreshInFlight || (document.visibilityState !== 'visible' && !measuring)) {
@@ -3327,9 +3382,13 @@ async function goToTab(tab: TabId): Promise<void> {
     state.search.selectedStopId = null
   }
 
-  // Salir de Buscar suelta el seguimiento de la ubicación si no queda quien la
-  // mire: es lo único de esa pantalla que sigue trabajando por detrás.
-  if (previous === 'buscar' && tab !== 'buscar' && tab !== 'info') {
+  // Al salir de Inicio, de Buscar o de Info se suelta el seguimiento de la
+  // ubicación: es lo único de esas pantallas que sigue trabajando por detrás.
+  // Solo se conserva si la pantalla de destino también lo usa (Buscar, o Inicio
+  // con la ubicación ya comprobada). De Buscar a Info se conserva como antes:
+  // "Mi ubicación" de Cómo llegar sigue tirando de ese seguimiento.
+  const keepForInfo = previous === 'buscar' && tab === 'info'
+  if (tab !== previous && !keepForInfo && !locationNeededOn(tab)) {
     stopWatchingLocation()
   }
 
@@ -3341,6 +3400,11 @@ async function goToTab(tab: TabId): Promise<void> {
   // primero que hay que resolver es si el teléfono puede saber dónde está.
   if (tab === 'buscar' && state.search.mode === 'cerca') {
     void startNearbySearch()
+  }
+
+  // Inicio comprueba, sin pedir nada, si hay ubicación activada de antes.
+  if (tab === 'inicio' && previous !== 'inicio') {
+    void syncHomeLocation()
   }
 
   render()
@@ -4051,8 +4115,9 @@ function closeMaps(): void {
   pendingLocationField = null
 
   // El seguimiento de la ubicación solo se suelta si no queda nadie mirándola:
-  // "paradas cercanas" vive ahora en Buscar y también la usa.
-  if (state.tab !== 'buscar') {
+  // "paradas cercanas" vive ahora en Buscar, y la parada más cercana de Inicio
+  // también la usa.
+  if (!locationNeededOn(state.tab)) {
     stopWatchingLocation()
   }
 
@@ -4070,6 +4135,155 @@ function closeMaps(): void {
 
   // La ubicación (state.geo) NO se toca: es de la app, no de esta pestaña.
   state.maps = emptyMapsState()
+}
+
+/**
+ * ¿La pantalla `tab` necesita el seguimiento de la ubicación vivo?
+ *
+ * Buscar sí (paradas cercanas) e Inicio también, pero solo cuando ya se comprobó
+ * que la ubicación está activada: si no, no hay nada que seguir.
+ */
+function locationNeededOn(tab: TabId): boolean {
+  return tab === 'buscar' || (tab === 'inicio' && state.geo.homeEnabled)
+}
+
+/*
+ * Inicio: parada más cercana, solo con la ubicación YA activada.
+ *
+ * Aquí no se pide permiso ni se avisa de que falte nada: si no hay permiso
+ * concedido o el servicio está apagado, simplemente no hay tarjeta. Es la
+ * diferencia con Buscar, donde pedir la ubicación es justo lo que se ha pedido.
+ */
+
+/** Cada cuánto se vuelve a comprobar, con Inicio delante, que la ubicación sigue activada. */
+const HOME_RECHECK_MS = 30_000
+
+/** Una posición más vieja que esto no vale para decidir qué parada tienes al lado. */
+const HOME_FIX_MAX_AGE_MS = 180_000
+
+let homeSyncing = false
+let homeCheckedAt = 0
+let nearestPrefetchedId: string | null = null
+
+/**
+ * ¿Está la ubicación activada sin que haga falta pedirla?
+ *
+ * Tres comprobaciones, todas de solo lectura:
+ *  - Permiso concedido: en Android lo dice el plugin nativo (el WebView no
+ *    refleja siempre el permiso del sistema); si no está disponible, y en el
+ *    navegador, la Permissions API. Sin ella no hay forma de saberlo sin pedirlo,
+ *    así que se da por no activada.
+ *  - Servicio de ubicación del teléfono encendido (solo Android).
+ */
+async function locationAlreadyAllowed(): Promise<boolean> {
+  if (!navigator.geolocation) {
+    return false
+  }
+
+  let granted: boolean | null = null
+
+  if (isNative()) {
+    try {
+      granted = (await DeviceSettings.hasLocationPermission()).granted
+    } catch {
+      granted = null
+    }
+  }
+
+  if (granted === null) {
+    try {
+      const status = await navigator.permissions?.query({ name: 'geolocation' })
+      granted = status?.state === 'granted'
+    } catch {
+      granted = false
+    }
+  }
+
+  if (!granted) {
+    return false
+  }
+
+  if (isNative()) {
+    try {
+      return (await DeviceSettings.isLocationEnabled()).enabled
+    } catch {
+      // No poder preguntarlo no es lo mismo que estar apagado.
+      return true
+    }
+  }
+
+  return true
+}
+
+/**
+ * Pone al día la ubicación de Inicio: comprueba y, si procede, localiza.
+ *
+ * @param restart Reinicia el seguimiento aunque ya hubiera uno; al volver a
+ *   primer plano el sistema pudo haberlo suspendido.
+ */
+async function syncHomeLocation(restart = false): Promise<void> {
+  if (!state.ready || state.tab !== 'inicio' || document.visibilityState !== 'visible' || homeSyncing) {
+    return
+  }
+
+  homeSyncing = true
+  homeCheckedAt = Date.now()
+
+  try {
+    const allowed = await locationAlreadyAllowed()
+
+    // Se puede haber cambiado de pestaña mientras se preguntaba.
+    if (state.tab !== 'inicio') {
+      return
+    }
+
+    const changed = state.geo.homeEnabled !== allowed
+    state.geo.homeEnabled = allowed
+
+    if (!allowed) {
+      stopWatchingLocation()
+      if (changed) {
+        render()
+      }
+      return
+    }
+
+    // Se acaba de comprobar que sí se puede: un bloqueo anterior ya no vale.
+    state.geo.blocked = null
+
+    if (restart || locationWatchId === null) {
+      const known = state.geo.location
+      if (known && Date.now() - known.at > HOME_FIX_MAX_AGE_MS) {
+        state.geo.location = null
+      }
+      locateMe()
+    } else if (changed) {
+      render()
+    }
+  } finally {
+    homeSyncing = false
+  }
+}
+
+/**
+ * Si la parada más cercana ha cambiado, adelanta sus tiempos.
+ *
+ * Va por el plan de refresco normal (`refreshVisible`), que indexa por parada y
+ * respeta la frescura: una parada ya favorita, o ya consultada hace poco, no se
+ * vuelve a pedir. Solo se llama al CAMBIAR de parada, no en cada lectura.
+ */
+function prefetchNearestStop(): void {
+  if (state.tab !== 'inicio') {
+    return
+  }
+
+  const id = homeNearestStop()?.stop.stopId ?? null
+
+  if (id && id !== nearestPrefetchedId) {
+    void refreshVisible('auto')
+  }
+
+  nearestPrefetchedId = id
 }
 
 function stopWatchingLocation(): void {
@@ -4117,9 +4331,10 @@ async function startNearbySearch(force = false): Promise<void> {
     return
   }
 
-  // Ya se sabe dónde estamos: la lista se dibuja con lo que hay y no se gasta
-  // ni una comprobación.
-  if (geo.location && !force) {
+  // Ya se sabe dónde estamos Y se sigue vigilando: la lista se dibuja con lo que
+  // hay y no se gasta ni una comprobación. Sin seguimiento vivo (Inicio lo suelta
+  // al salir) la posición guardada puede ser vieja, y se vuelve a localizar.
+  if (geo.location && !force && locationWatchId !== null) {
     return
   }
 
@@ -4231,8 +4446,8 @@ function locateMe(): void {
  * afinada de 20 m movía las paradas cercanas hacia atrás delante de tus ojos.
  */
 function acceptPosition(position: GeolocationPosition): void {
-  // Se puede haber salido de las dos pantallas que la usan mientras llegaba.
-  if (state.tab !== 'info' && state.tab !== 'buscar') {
+  // Se puede haber salido de las pantallas que la usan mientras llegaba.
+  if (state.tab !== 'info' && !locationNeededOn(state.tab)) {
     stopWatchingLocation()
     return
   }
@@ -4265,6 +4480,7 @@ function acceptPosition(position: GeolocationPosition): void {
   }
 
   state.geo.location = { point, accuracy, at: Date.now() }
+  prefetchNearestStop()
   // Las dos firmas caducan: el mapa de rutas dibuja "estás aquí", y el del
   // buscador centra ahí cuando se pide.
   mapsSignature = ''
@@ -4297,6 +4513,8 @@ function rejectPosition(error: GeolocationPositionError): void {
 
   if (error.code === error.PERMISSION_DENIED) {
     stopWatchingLocation()
+    // Sin permiso, Inicio deja de enseñar la parada más cercana.
+    state.geo.homeEnabled = false
   }
 
   render()

@@ -504,10 +504,23 @@ export interface GeoState {
    * SALBUS. Decir "activa la ubicacion" sin decir donde no ayuda a nadie.
    */
   blocked: 'service' | 'permission' | null
+  /**
+   * Inicio ya comprobó, SIN pedir nada, que el permiso está concedido y el
+   * servicio de ubicación encendido. Solo entonces dibuja la parada más cercana.
+   * Lo escribe únicamente la comprobación de Inicio; Buscar no lo toca.
+   */
+  homeEnabled: boolean
 }
 
 export function emptyGeoState(): GeoState {
-  return { location: null, locating: false, checkingService: false, error: null, blocked: null }
+  return {
+    location: null,
+    locating: false,
+    checkingService: false,
+    error: null,
+    blocked: null,
+    homeEnabled: false,
+  }
 }
 
 /* ------------------------------------------------------------------ *
