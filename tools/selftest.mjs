@@ -1932,6 +1932,7 @@ async function main() {
     const {
       parseCutDate, parseTrafficCuts, datedCut, relevantCuts, lineImpacts, decodeLineShapes,
       formatCutName, readCachedCuts, writeCachedCuts,
+      parseHttpDate, headerValue, sourceModifiedFromHeaders, sourceAgeDays, isSourceStale, STALE_SOURCE_DAYS,
     } = cutsApi
 
     const sampleText = await fs.readFile(
@@ -2051,7 +2052,66 @@ async function main() {
       store.set('salbus.trafficCuts', JSON.stringify({ v: 9, fetchedAt: 1, cuts: [] }))
       check('una caché de otra versión se ignora', readCachedCuts() === null)
 
+      // Caché v1 (anterior a la fecha de la fuente): se lee sin romper y sin fecha.
+      store.set('salbus.trafficCuts', JSON.stringify({ v: 1, fetchedAt: 4321, cuts: sample }))
+      const legacy = readCachedCuts()
+      check('una caché v1 antigua se sigue leyendo, sin fecha de fuente',
+        legacy !== null && legacy.fetchedAt === 4321 && legacy.sourceModified === null && legacy.cuts.length === 3)
+      store.set('salbus.trafficCuts', JSON.stringify({ v: 1, fetchedAt: 4321, sourceModified: 99, cuts: [] }))
+      check('una v1 no hace caso de un sourceModified que no le toca', readCachedCuts().sourceModified === null)
+
+      // Caché v2: guarda y devuelve la fecha de la fuente.
+      const modified = Date.UTC(2026, 9, 9, 7, 28, 0)
+      writeCachedCuts(sample, 8765, day(2026, 8, 15), modified)
+      check('guarda y recupera la fecha de la fuente',
+        readCachedCuts().sourceModified === modified && JSON.parse(store.get('salbus.trafficCuts')).v === 2)
+      writeCachedCuts(sample, 8766, day(2026, 8, 15))
+      check('sin fecha de fuente la caché la deja en null', readCachedCuts().sourceModified === null)
+      store.set('salbus.trafficCuts', JSON.stringify({ v: 2, fetchedAt: 1, sourceModified: 'ayer', cuts: [] }))
+      check('una fecha de fuente corrupta en la v2 se descarta sin tirar la caché',
+        readCachedCuts() !== null && readCachedCuts().sourceModified === null)
+
       globalThis.window = previousWindow
+    }
+
+    // --- Fecha de la fuente (Last-Modified) ----------------------------
+    {
+      const expected = Date.UTC(2026, 9, 9, 7, 28, 0)
+      check('lee un Last-Modified válido', parseHttpDate('Fri, 09 Oct 2026 07:28:00 GMT') === expected,
+        String(parseHttpDate('Fri, 09 Oct 2026 07:28:00 GMT')))
+      check('tolera espacios alrededor', parseHttpDate('  Fri, 09 Oct 2026 07:28:00 GMT ') === expected)
+      check('rechaza fechas inválidas y vacías',
+        parseHttpDate('ayer') === null && parseHttpDate('') === null && parseHttpDate('12345') === null
+          && parseHttpDate('Fri, 31 Feb 2026 07:28:00 GMT') === null && parseHttpDate('2026-10-09T07:28:00Z') === null
+          && parseHttpDate(undefined) === null && parseHttpDate(null) === null && parseHttpDate(42) === null)
+
+      check('busca la cabecera sin distinguir mayúsculas',
+        headerValue({ 'content-type': 'x', 'LAST-MODIFIED': 'a' }, 'last-modified') === 'a'
+          && headerValue({ 'Last-Modified': 'b' }, 'last-modified') === 'b'
+          && headerValue({ 'last-modified': 'c' }, 'Last-Modified') === 'c')
+      check('una cabecera ausente o unas cabeceras nulas dan null',
+        headerValue({ ETag: '"x"' }, 'last-modified') === null && headerValue(undefined, 'last-modified') === null
+          && headerValue(null, 'last-modified') === null)
+      check('lee las cabeceras de fetch (Headers)',
+        headerValue(new Headers({ 'Last-Modified': 'd' }), 'last-modified') === 'd'
+          && headerValue(new Headers(), 'last-modified') === null)
+      check('una cabecera repetida como lista usa el primer valor',
+        headerValue({ 'Last-Modified': ['a', 'b'] }, 'last-modified') === 'a')
+      check('fecha de la fuente a partir de cabeceras con otras mayúsculas',
+        sourceModifiedFromHeaders({ 'LAST-MODIFIED': 'Fri, 09 Oct 2026 07:28:00 GMT', Etag: '"abc"' }) === expected
+          && sourceModifiedFromHeaders({ 'last-modified': 'basura' }) === null
+          && sourceModifiedFromHeaders({}) === null)
+
+      // Antigüedad: por día civil local, así que no depende de la hora ni de la zona horaria.
+      const source = day(2026, 10, 9, 8).getTime()
+      check('la edad de la fuente se cuenta en días civiles',
+        sourceAgeDays(source, day(2026, 10, 9, 23)) === 0 && sourceAgeDays(source, day(2026, 10, 15)) === 6)
+      check('una fecha de fuente futura cuenta como hoy', sourceAgeDays(day(2026, 10, 20).getTime(), day(2026, 10, 15)) === 0)
+      check('el umbral es de 3 días', STALE_SOURCE_DAYS === 3)
+      check('a 3 días todavía no es antigua', !isSourceStale(source, day(2026, 10, 12)))
+      check('a 4 días ya es antigua', isSourceStale(source, day(2026, 10, 13)))
+      check('9 de octubre frente al 15: antigua', isSourceStale(source, day(2026, 10, 15)))
+      check('sin fecha de fuente no se puede afirmar que sea antigua', !isSourceStale(null, day(2026, 10, 15)))
     }
 
     // --- Nombres -------------------------------------------------------
@@ -2195,6 +2255,8 @@ async function main() {
         path.join(projectRoot, 'src', 'services', 'traffic-cuts.ts'), 'utf8')
       check('en Android la fuente se pide como texto con CapacitorHttp',
         /CapacitorHttp\.get\(\{[\s\S]{0,400}responseType: 'text'/.test(serviceSource))
+      check('la descarga nativa devuelve las cabeceras y la fecha de la fuente sale de ellas',
+        /headers: response\.headers/.test(serviceSource) && /sourceModifiedFromHeaders\(headers\)/.test(serviceSource))
       check('la caché envuelve el almacenamiento en try/catch',
         /readCachedCuts[\s\S]{0,200}try \{[\s\S]*?catch/.test(serviceSource)
           && /writeCachedCuts[\s\S]{0,400}try \{[\s\S]*?catch/.test(serviceSource))

@@ -4,17 +4,19 @@ import {
   datedCut,
   fetchTrafficCuts,
   formatCutName,
+  isSourceStale,
   loadLineShapes,
   lineImpacts,
   readCachedCuts,
   relevantCuts,
+  sourceAgeDays,
   writeCachedCuts,
   type DatedCut,
   type LineImpact,
   type LineShape,
   type TrafficCut,
 } from './services/traffic-cuts'
-import { emptyState, esc, icon, lineChip } from './ui'
+import { emptyState, esc, icon, lineChip, notice } from './ui'
 
 /**
  * Cortes de tráfico del Ayuntamiento: carga, refresco y pintado.
@@ -47,6 +49,8 @@ type Phase = 'idle' | 'loading' | 'ok' | 'error'
 
 let cuts: TrafficCut[] = []
 let fetchedAt: number | null = null
+/** Cuándo cambió el fichero en la fuente (`Last-Modified`); null si no se conoce. */
+let sourceModified: number | null = null
 let phase: Phase = 'idle'
 let notify: () => void = () => {}
 let started = false
@@ -74,6 +78,7 @@ export function initTrafficCuts(onChange: () => void): void {
     if (cached) {
       cuts = cached.cuts
       fetchedAt = cached.fetchedAt
+      sourceModified = cached.sourceModified
       await recomputeImpacts()
       notify()
     }
@@ -105,9 +110,10 @@ async function refresh(): Promise<void> {
 
   try {
     const downloaded = await fetchTrafficCuts()
-    cuts = downloaded
+    cuts = downloaded.cuts
     fetchedAt = Date.now()
-    writeCachedCuts(downloaded, fetchedAt)
+    sourceModified = downloaded.sourceModified
+    writeCachedCuts(downloaded.cuts, fetchedAt, new Date(fetchedAt), sourceModified)
     await recomputeImpacts()
     phase = 'ok'
     notify()
@@ -237,8 +243,19 @@ export function renderTrafficCutsSection(): string {
       )}</div>`
     : items.map((item) => renderCut(item, today)).join('')
 
+  // La fecha que cuenta es la de la fuente: la de descarga solo dice cuándo se
+  // consultó, y el portal lleva a veces semanas sin cambiar el fichero.
+  const stale = isSourceStale(sourceModified, today)
+  const staleNotice = stale && sourceModified !== null
+    ? notice('warn', `La fuente lleva ${sourceAgeDays(sourceModified, today)} días sin actualizarse: puede haber cortes que no aparecen aquí.`)
+    : ''
+  const updated = sourceModified !== null
+    ? `Datos del Ayuntamiento actualizados por última vez el ${esc(formatSourceDay(sourceModified, today))}.`
+    : `Datos abiertos del Ayuntamiento de Salamanca, actualizados el ${esc(formatUpdated(fetchedAt))}.`
+
   return `
     ${head}
+    ${staleNotice}
     <section class="card traffic-card">
       ${body}
     </section>
@@ -248,7 +265,7 @@ export function renderTrafficCutsSection(): string {
         : ''
     }
     <p class="text-tiny">
-      Datos abiertos del Ayuntamiento de Salamanca, actualizados el ${esc(formatUpdated(fetchedAt))}.
+      ${updated}
       Las líneas se estiman por cercanía de su trazado al corte (a menos de ${NEAR_METERS} m de la calle): no es un
       aviso oficial de desvíos y un corte puede dejar un carril libre.
     </p>
@@ -317,6 +334,13 @@ function formatDay(iso: string, today: Date): string {
   const [year, month, day] = iso.split('-').map((part) => Number.parseInt(part, 10))
   const label = new Date(year, month - 1, day).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })
   return year === today.getFullYear() ? label : `${label} ${year}`
+}
+
+/** "9 de octubre" (con el año solo cuando no es el actual). */
+function formatSourceDay(at: number, today: Date): string {
+  const date = new Date(at)
+  const label = date.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })
+  return date.getFullYear() === today.getFullYear() ? label : `${label} de ${date.getFullYear()}`
 }
 
 function formatUpdated(at: number): string {

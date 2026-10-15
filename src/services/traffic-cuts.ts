@@ -10,7 +10,10 @@ import { Capacitor, CapacitorHttp } from '@capacitor/core'
  * elemento. Las propiedades son todas texto: `ID`, `Name`, `fecha_inicio` y
  * `fecha_fin` (dd/MM/yyyy, sin hora; el día de fin cuenta entero). El fichero
  * trae cortes ya terminados y futuros, así que se filtra aquí, en cliente, y se
- * actualiza más o menos a diario.
+ * actualiza, según el portal, a diario. En la práctica ha pasado semanas
+ * sin cambiar, así que la cabecera `Last-Modified` de la descarga se guarda y
+ * la app avisa cuando la fuente lleva demasiados días parada (ver
+ * `isSourceStale`).
  *
  * Se sirve como `application/octet-stream` y sin cabecera CORS:
  *
@@ -70,6 +73,13 @@ export const PARALLEL_DEGREES = 35
 
 /** Distancia a la que el corte «toca» el trazado de la línea al cruzarlo. */
 export const CROSS_METERS = 3
+
+/**
+ * Días sin cambios en la fuente a partir de los cuales se avisa de que los datos
+ * están desactualizados. El portal dice actualizarse a diario, pero el fichero ha
+ * llegado a pasar semanas sin cambiar.
+ */
+export const STALE_SOURCE_DAYS = 3
 
 /** Separación de las muestras tomadas sobre el trazado de la línea. */
 const SAMPLE_STEP_METERS = 5
@@ -151,6 +161,75 @@ export function parseCutDate(value: unknown): string | null {
 function dayNumber(iso: string): number {
   const [year, month, day] = iso.split('-').map((part) => Number.parseInt(part, 10))
   return Math.round(Date.UTC(year, month - 1, day) / 86_400_000)
+}
+
+/**
+ * Fecha HTTP (`Last-Modified`: «Thu, 09 Oct 2026 07:28:00 GMT») -> milisegundos
+ * desde 1970, o null si no es una fecha real.
+ *
+ * Se exige el formato de fecha de HTTP completo: `Date.parse` por sí solo acepta
+ * cosas como «12345» o «ayer 3», y una fecha de fuente inventada es peor que no
+ * tener ninguna.
+ */
+export function parseHttpDate(value: unknown): number | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const text = value.trim()
+  const match = /^[A-Za-z]{3}, (\d{1,2}) [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.exec(text)
+  if (!match) {
+    return null
+  }
+
+  // `Date.parse` corrige en silencio «31 Feb» al 3 de marzo: se comprueba que
+  // el día no se haya movido.
+  const time = Date.parse(text)
+  return Number.isFinite(time) && new Date(time).getUTCDate() === Number.parseInt(match[1], 10) ? time : null
+}
+
+/** Valor de una cabecera sin distinguir mayúsculas (en Android llegan como sea). */
+export function headerValue(headers: unknown, name: string): string | null {
+  if (!headers || typeof headers !== 'object') {
+    return null
+  }
+
+  // `Headers` de fetch: sus valores no son propiedades del objeto.
+  if (typeof (headers as Headers).get === 'function') {
+    try {
+      return (headers as Headers).get(name)
+    } catch {
+      return null
+    }
+  }
+
+  const wanted = name.toLowerCase()
+  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+    if (key.toLowerCase() === wanted) {
+      const first = Array.isArray(value) ? value[0] : value
+      return typeof first === 'string' ? first : null
+    }
+  }
+
+  return null
+}
+
+/** Cuándo cambió la fuente por última vez, según su `Last-Modified`; null si no lo dice. */
+export function sourceModifiedFromHeaders(headers: unknown): number | null {
+  return parseHttpDate(headerValue(headers, 'last-modified'))
+}
+
+/**
+ * Días enteros que lleva la fuente sin cambiar, contados por día civil local
+ * (0 = se modificó hoy). Una fecha en el futuro, por un reloj descuadrado, cuenta 0.
+ */
+export function sourceAgeDays(sourceModified: number, today: Date): number {
+  return Math.max(0, dayNumber(localIsoDay(today)) - dayNumber(localIsoDay(new Date(sourceModified))))
+}
+
+/** La fuente lleva más de `STALE_SOURCE_DAYS` días sin actualizarse. */
+export function isSourceStale(sourceModified: number | null, today: Date): boolean {
+  return sourceModified !== null && sourceAgeDays(sourceModified, today) > STALE_SOURCE_DAYS
 }
 
 /** Fecha local del dispositivo como `YYYY-MM-DD`. */
@@ -282,12 +361,22 @@ function geometryParts(geometry: unknown): LatLon[][] {
   return parts
 }
 
-/** Descarga el fichero oficial. Lanza si no se puede (en el navegador, siempre). */
-export async function fetchTrafficCuts(): Promise<TrafficCut[]> {
-  return parseTrafficCuts(await httpGetText(TRAFFIC_CUTS_URL))
+export interface TrafficCutsDownload {
+  cuts: TrafficCut[]
+  /**
+   * Cuándo cambió el fichero en la fuente (`Last-Modified`), o null si no se
+   * conoce: en el navegador la cabecera no llega y el servidor puede no mandarla.
+   */
+  sourceModified: number | null
 }
 
-async function httpGetText(url: string): Promise<string> {
+/** Descarga el fichero oficial. Lanza si no se puede (en el navegador, siempre). */
+export async function fetchTrafficCuts(): Promise<TrafficCutsDownload> {
+  const { body, headers } = await httpGetText(TRAFFIC_CUTS_URL)
+  return { cuts: parseTrafficCuts(body), sourceModified: sourceModifiedFromHeaders(headers) }
+}
+
+async function httpGetText(url: string): Promise<{ body: string, headers: unknown }> {
   if (Capacitor.isNativePlatform()) {
     const response = await CapacitorHttp.get({
       url,
@@ -303,7 +392,10 @@ async function httpGetText(url: string): Promise<string> {
       throw new Error(`La fuente de cortes de tráfico respondió ${response.status}.`)
     }
 
-    return typeof response.data === 'string' ? response.data : JSON.stringify(response.data ?? null)
+    return {
+      body: typeof response.data === 'string' ? response.data : JSON.stringify(response.data ?? null),
+      headers: response.headers,
+    }
   }
 
   // Sin CORS en la fuente, este fetch falla en el navegador: es lo esperado.
@@ -311,7 +403,7 @@ async function httpGetText(url: string): Promise<string> {
   if (!response.ok) {
     throw new Error(`La fuente de cortes de tráfico respondió ${response.status}.`)
   }
-  return response.text()
+  return { body: await response.text(), headers: response.headers }
 }
 
 /* ------------------------------------------------------------------ *
@@ -320,15 +412,23 @@ async function httpGetText(url: string): Promise<string> {
 
 const CACHE_KEY = 'salbus.trafficCuts'
 
+/**
+ * Versión 2 añade `sourceModified`. La versión 1 (sin esa fecha) se sigue
+ * leyendo: quien la guardó no la conocía y se queda en null hasta la siguiente
+ * descarga.
+ */
 interface CachePayload {
-  v: 1
+  v: 1 | 2
   /** Cuándo se descargó, en milisegundos desde 1970. */
   fetchedAt: number
+  /** Cuándo cambió el fichero en la fuente (`Last-Modified`), o null si no se supo. */
+  sourceModified?: number | null
   cuts: TrafficCut[]
 }
 
 export interface CachedCuts {
   fetchedAt: number
+  sourceModified: number | null
   cuts: TrafficCut[]
 }
 
@@ -341,7 +441,7 @@ export function readCachedCuts(): CachedCuts | null {
     }
 
     const payload = JSON.parse(raw) as Partial<CachePayload> | null
-    if (!payload || payload.v !== 1 || !Number.isFinite(payload.fetchedAt) || !Array.isArray(payload.cuts)) {
+    if (!payload || (payload.v !== 1 && payload.v !== 2) || !Number.isFinite(payload.fetchedAt) || !Array.isArray(payload.cuts)) {
       return null
     }
 
@@ -350,7 +450,10 @@ export function readCachedCuts(): CachedCuts | null {
         Boolean(cut) && typeof cut.id === 'string' && typeof cut.name === 'string'
         && typeof cut.start === 'string' && typeof cut.end === 'string' && Array.isArray(cut.parts),
     )
-    return { fetchedAt: payload.fetchedAt as number, cuts }
+    const sourceModified = payload.v === 2 && Number.isFinite(payload.sourceModified)
+      ? (payload.sourceModified as number)
+      : null
+    return { fetchedAt: payload.fetchedAt as number, sourceModified, cuts }
   } catch {
     return null
   }
@@ -360,11 +463,17 @@ export function readCachedCuts(): CachedCuts | null {
  * Guarda el resultado. Los cortes que ya terminaron no se guardan: el fichero
  * los acumula y a la caché no le sirve de nada llevarlos encima.
  */
-export function writeCachedCuts(cuts: TrafficCut[], fetchedAt: number, today = new Date()): void {
+export function writeCachedCuts(
+  cuts: TrafficCut[],
+  fetchedAt: number,
+  today = new Date(),
+  sourceModified: number | null = null,
+): void {
   try {
     const payload: CachePayload = {
-      v: 1,
+      v: 2,
       fetchedAt,
+      sourceModified,
       cuts: cuts.filter((cut) => datedCut(cut, today).status !== 'past'),
     }
     window.localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
