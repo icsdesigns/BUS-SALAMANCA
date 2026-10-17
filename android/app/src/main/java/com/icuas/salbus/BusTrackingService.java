@@ -268,6 +268,23 @@ public class BusTrackingService extends Service {
     private static final String PREF_RENEWED = "renewedJobs";
 
     /**
+     * Avisos que terminaron (autobus pasado) y que la app aun no ha recogido.
+     *
+     * Avisar a la app en el momento (evento {@code arrivalUpdate} con
+     * {@code finished}) no basta: con el WebView congelado o el proceso muerto
+     * poco despues, el evento se pierde y la app conservaria el aviso con la
+     * cuenta antigua, reviviendolo al abrirse. Por eso se anota SIEMPRE en disco,
+     * haya alguien escuchando o no, y la app lo recoge con {@code takeFinished}.
+     *
+     * Cada entrada es {@code id + FIELD_SEPARATOR + epochMs} (instante en que
+     * termino). Una sola entrada por aviso: la ultima gana.
+     */
+    private static final String PREF_FINISHED = "finishedJobs";
+
+    /** Tras esto el aviso de "completado" se retira solo de la bandeja. */
+    private static final long COMPLETED_TIMEOUT_MS = 30 * 60 * 1000L;
+
+    /**
      * Pasos de puntualidad detectados que la app aun no ha recogido.
      *
      * Van a disco porque casi siempre se detectan con la app cerrada: es el
@@ -592,8 +609,56 @@ public class BusTrackingService extends Service {
         return stored.toArray(new String[0]);
     }
 
-    private synchronized void rememberRenewed(String raw) {
-        SharedPreferences prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    /**
+     * Entrega los avisos terminados que la app no llego a ver Y los borra: se
+     * leen una sola vez. Cada elemento es {@code id + FIELD_SEPARATOR + epochMs}.
+     */
+    static synchronized String[] takeFinishedJobs(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> stored = prefs.getStringSet(PREF_FINISHED, new LinkedHashSet<String>());
+        String[] result = new LinkedHashSet<>(stored).toArray(new String[0]);
+        prefs.edit().remove(PREF_FINISHED).apply();
+        return result;
+    }
+
+    /** Apunta el aviso como terminado en `atMs`; sustituye una entrada anterior del mismo id. */
+    private static synchronized void rememberFinished(Context context, String jobId, long atMs) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> stored = new LinkedHashSet<>(prefs.getStringSet(PREF_FINISHED, new LinkedHashSet<String>()));
+        stored.removeIf((item) -> item.split(Pattern.quote(FIELD_SEPARATOR), 2)[0].equals(jobId));
+        stored.add(jobId + FIELD_SEPARATOR + atMs);
+        prefs.edit().putStringSet(PREF_FINISHED, stored).apply();
+    }
+
+    /** Un aviso renovado deja de contar como terminado, o la app lo borraria al abrirse. */
+    private static synchronized void forgetFinished(Context context, String jobId) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> stored = new LinkedHashSet<>(prefs.getStringSet(PREF_FINISHED, new LinkedHashSet<String>()));
+        if (!stored.removeIf((item) -> item.split(Pattern.quote(FIELD_SEPARATOR), 2)[0].equals(jobId))) {
+            return;
+        }
+        prefs.edit().putStringSet(PREF_FINISHED, stored).apply();
+    }
+
+    /**
+     * Un renovado pendiente que luego termina o se detiene ya no debe crearse
+     * al abrir la app: la recogida aplica los renovados DESPUES de los cierres
+     * y de las bajas, y lo reviviria.
+     */
+    private static synchronized void forgetRenewed(Context context, String jobId) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        Set<String> stored = new LinkedHashSet<>(prefs.getStringSet(PREF_RENEWED, new LinkedHashSet<String>()));
+        if (!stored.removeIf((item) -> item.split(Pattern.quote(FIELD_SEPARATOR), 2)[0].equals(jobId))) {
+            return;
+        }
+        prefs.edit().putStringSet(PREF_RENEWED, stored).apply();
+    }
+
+    // Estatico y sincronizado como `forgetRenewed` y `takeRenewedJobs`: el cierre
+    // corre en el hilo de sondeo y el boton en el principal, y con cerrojos
+    // distintos uno podia pisar la escritura del otro.
+    private static synchronized void rememberRenewed(Context context, String raw) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         Set<String> stored = new LinkedHashSet<>(prefs.getStringSet(PREF_RENEWED, new LinkedHashSet<String>()));
         String id = raw.split(Pattern.quote(FIELD_SEPARATOR), 2)[0];
         // Una sola entrada por aviso: pulsar dos veces no crea dos.
@@ -916,12 +981,13 @@ public class BusTrackingService extends Service {
             jobs.add(job);
             cancelSpareNotifications();
             forgetStopped(job.id);
+            forgetFinished(this, job.id);
 
             BusTrackingPlugin plugin = listener;
             if (plugin != null) {
                 plugin.emitJobRenewed(raw);
             } else {
-                rememberRenewed(raw);
+                rememberRenewed(this, raw);
             }
         }
 
@@ -1004,6 +1070,7 @@ public class BusTrackingService extends Service {
         }
 
         rememberStopped(jobId);
+        forgetRenewed(this, jobId);
         jobs.remove(job);
         cancelSpareNotifications();
         notifyJobStopped(jobId);
@@ -1542,6 +1609,8 @@ public class BusTrackingService extends Service {
                     : "Tu autobús ha pasado por " + job.stopName + ".")
                 .setContentIntent(openAppIntent())
                 .setAutoCancel(true)
+                // Un aviso ya cumplido no debe quedarse en la bandeja para siempre.
+                .setTimeoutAfter(COMPLETED_TIMEOUT_MS)
                 .setCategory(Notification.CATEGORY_TRANSPORT)
                 .addAction(new Notification.Action.Builder(
                     null, "Siguiente bus", renewIntent(job, summaryId)).build())
@@ -1552,12 +1621,15 @@ public class BusTrackingService extends Service {
         jobs.remove(job);
         cancelSpareNotifications();
 
-        BusTrackingPlugin plugin = listener;
-        if (plugin == null) {
-            // Nadie escucha (la app se cerro del todo): se anota como retirado
-            // para que al abrirla no lo reviva con la cuenta antigua.
-            rememberStopped(job.id);
-        }
+        // Se anota SIEMPRE en disco, aunque el plugin siga enganchado: su WebView
+        // puede estar congelado o el proceso morir enseguida, y el evento de
+        // abajo se perderia. Al abrir, la app recoge esto con `takeFinished` y
+        // no revive el aviso con la cuenta antigua. (`rememberStopped` queda solo
+        // para el "Detener" a mano.)
+        rememberFinished(this, job.id, System.currentTimeMillis());
+        // Si venia de un "Siguiente bus" pulsado con la app cerrada, ese renovado
+        // ya ha terminado: recogerlo al abrir crearia el aviso otra vez.
+        forgetRenewed(this, job.id);
         // La UI lo lee de `finished` para cerrar el aviso en pantalla.
         notifyUi(job, ArrivalsClient.STATUS_OK, -1, false, true);
     }

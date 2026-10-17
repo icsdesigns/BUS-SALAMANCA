@@ -18,6 +18,17 @@ import type { PermissionState } from '../state'
 const CHANNEL_ID = 'salbus-seguimiento'
 const SMALL_ICON = 'ic_stat_salbus'
 
+/**
+ * Cuanto vive la notificacion de "aviso completado": pasados 30 minutos ya no dice
+ * nada util (el autobus pasó hace rato) y solo ensucia la barra. El servicio
+ * nativo hace lo mismo con su propia notificacion (`setTimeoutAfter`); esta es la
+ * de la web, la que sale cuando no hay servicio.
+ */
+export const COMPLETED_ALERT_TTL_MS = 30 * 60 * 1000
+
+/** Donde se apuntan las notificaciones completadas, para limpiarlas tras cerrar la app. */
+const COMPLETED_ALERTS_KEY = 'salbus.completedAlerts'
+
 let channelReady = false
 
 export function isNative(): boolean {
@@ -238,8 +249,122 @@ export async function showArrivalAlert(
         },
       ],
     })
+
+    if (done) {
+      rememberCompletedAlert(id)
+    } else {
+      // El mismo id lo reutiliza el aviso de paso de un seguimiento nuevo: la
+      // caducidad del completado anterior ya no debe borrarlo.
+      forgetCompletedAlert(id)
+    }
   } catch {
     /* ignorado a proposito */
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Avisos completados: caducan a los 30 minutos                        *
+ * ------------------------------------------------------------------ */
+
+interface CompletedAlert {
+  notificationId: number
+  at: number
+}
+
+/** Temporizadores de esta sesion, por id de notificacion (uno por aviso, no se apilan). */
+const completedAlertTimers = new Map<number, number>()
+
+function readCompletedAlerts(): CompletedAlert[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(COMPLETED_ALERTS_KEY) ?? '[]')
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (item): item is CompletedAlert =>
+            typeof item?.notificationId === 'number' && typeof item?.at === 'number',
+        )
+      : []
+  } catch {
+    return []
+  }
+}
+
+function writeCompletedAlerts(alerts: CompletedAlert[]): void {
+  try {
+    window.localStorage.setItem(COMPLETED_ALERTS_KEY, JSON.stringify(alerts))
+  } catch {
+    /* almacenamiento bloqueado: la limpieza se queda en el temporizador */
+  }
+}
+
+/** Apunta el aviso completado y programa su retirada a los 30 minutos. */
+function rememberCompletedAlert(id: number): void {
+  const at = Date.now()
+  // El mismo id se reutiliza: el aviso nuevo sustituye al anterior y reinicia los 30 minutos.
+  writeCompletedAlerts([...readCompletedAlerts().filter((item) => item.notificationId !== id), { notificationId: id, at }])
+  scheduleCompletedAlertExpiry(id, COMPLETED_ALERT_TTL_MS)
+}
+
+function forgetCompletedAlert(id: number): void {
+  const timer = completedAlertTimers.get(id)
+  if (timer !== undefined) {
+    window.clearTimeout(timer)
+    completedAlertTimers.delete(id)
+  }
+
+  const alerts = readCompletedAlerts()
+  if (alerts.some((item) => item.notificationId === id)) {
+    writeCompletedAlerts(alerts.filter((item) => item.notificationId !== id))
+  }
+}
+
+function scheduleCompletedAlertExpiry(id: number, delayMs: number): void {
+  const previous = completedAlertTimers.get(id)
+  if (previous !== undefined) {
+    window.clearTimeout(previous)
+  }
+
+  completedAlertTimers.set(
+    id,
+    window.setTimeout(() => {
+      completedAlertTimers.delete(id)
+      void purgeCompletedAlerts()
+    }, Math.max(0, delayMs)),
+  )
+}
+
+/**
+ * Retira las notificaciones de aviso completado que ya tienen 30 minutos o mas y
+ * las borra de la lista. Se llama al arrancar y al volver a primer plano: con la
+ * app cerrada el temporizador no corre, y esta es la ocasion de ponerse al dia.
+ * Las que aun no caducan reprograman su temporizador por lo que les queda.
+ */
+export async function purgeCompletedAlerts(): Promise<void> {
+  const now = Date.now()
+  const alerts = readCompletedAlerts()
+  if (alerts.length === 0) {
+    return
+  }
+
+  const expired = alerts.filter((item) => now - item.at >= COMPLETED_ALERT_TTL_MS)
+  const alive = alerts.filter((item) => now - item.at < COMPLETED_ALERT_TTL_MS)
+
+  // La lista se corrige antes de cancelar: si dos llamadas se solapan, la
+  // segunda ya no vuelve a cancelar lo mismo.
+  writeCompletedAlerts(alive)
+
+  for (const item of alive) {
+    if (!completedAlertTimers.has(item.notificationId)) {
+      scheduleCompletedAlertExpiry(item.notificationId, COMPLETED_ALERT_TTL_MS - (now - item.at))
+    }
+  }
+
+  for (const item of expired) {
+    const timer = completedAlertTimers.get(item.notificationId)
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      completedAlertTimers.delete(item.notificationId)
+    }
+    await cancelNotification(item.notificationId)
   }
 }
 
