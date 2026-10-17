@@ -1933,6 +1933,8 @@ async function main() {
       parseCutDate, parseTrafficCuts, datedCut, relevantCuts, lineImpacts, decodeLineShapes,
       formatCutName, readCachedCuts, writeCachedCuts,
       parseHttpDate, headerValue, sourceModifiedFromHeaders, sourceAgeDays, isSourceStale, STALE_SOURCE_DAYS,
+      laterCuts, formatLongDay, formatShortDay, describeCutDates, cutStatusLabel, untilLabel, sourceAgeLabel,
+      describeSourceUpdate,
     } = cutsApi
 
     const sampleText = await fs.readFile(
@@ -2070,6 +2072,13 @@ async function main() {
       store.set('salbus.trafficCuts', JSON.stringify({ v: 2, fetchedAt: 1, sourceModified: 'ayer', cuts: [] }))
       check('una fecha de fuente corrupta en la v2 se descarta sin tirar la caché',
         readCachedCuts() !== null && readCachedCuts().sourceModified === null)
+      const raro = (id, start, end) => ({ id, name: id, start, end, parts: [] })
+      store.set('salbus.trafficCuts', JSON.stringify({ v: 2, fetchedAt: 1, cuts: [
+        raro('ok', '2026-10-01', '2026-10-02'), raro('basura', 'ayer', 'mañana'), raro('mes13', '2026-13-01', '2026-13-02'),
+        raro('31feb', '2026-02-31', '2026-03-01'), raro('al-reves', '2026-10-05', '2026-10-01'),
+      ] }))
+      check('la caché descarta cortes con fechas imposibles o al revés',
+        readCachedCuts().cuts.map((cut) => cut.id).join() === 'ok', readCachedCuts().cuts.map((cut) => cut.id).join())
 
       globalThis.window = previousWindow
     }
@@ -2112,6 +2121,77 @@ async function main() {
       check('a 4 días ya es antigua', isSourceStale(source, day(2026, 10, 13)))
       check('9 de octubre frente al 15: antigua', isSourceStale(source, day(2026, 10, 15)))
       check('sin fecha de fuente no se puede afirmar que sea antigua', !isSourceStale(null, day(2026, 10, 15)))
+    }
+
+    // --- Fechas para mostrar ---------------------------------------------
+    {
+      const hoy = day(2026, 10, 17)
+      const dates = (start, end, today = hoy) => describeCutDates({ start, end }, today)
+
+      check('fecha larga con el año', formatLongDay('2026-09-01') === '1 de septiembre de 2026', formatLongDay('2026-09-01'))
+      check('fecha corta: sin año en el actual y con año en otro',
+        formatShortDay('2026-09-30', hoy) === '30 sep' && formatShortDay('2027-01-05', hoy) === '5 ene 2027')
+
+      check('rango entre meses con el año al final',
+        dates('2026-07-14', '2026-09-01', day(2026, 7, 1)) === 'Del 14 de julio al 1 de septiembre de 2026',
+        dates('2026-07-14', '2026-09-01', day(2026, 7, 1)))
+      check('rango dentro de un mes no repite el mes',
+        dates('2026-10-20', '2026-10-25') === 'Del 20 al 25 de octubre de 2026', dates('2026-10-20', '2026-10-25'))
+      check('rango que cruza de año lleva los dos años',
+        dates('2026-12-20', '2027-01-10') === 'Del 20 de diciembre de 2026 al 10 de enero de 2027',
+        dates('2026-12-20', '2027-01-10'))
+      check('inicio = fin: solo ese día',
+        dates('2026-08-28', '2026-08-28', day(2026, 8, 1)) === 'Solo el 28 de agosto de 2026')
+      check('inicio = fin = hoy', dates('2026-10-17', '2026-10-17') === 'Solo hoy (17 de octubre de 2026)')
+      check('inicio = fin = mañana', dates('2026-10-18', '2026-10-18') === 'Solo mañana (18 de octubre de 2026)')
+      check('empieza hoy', dates('2026-10-17', '2026-11-02') === 'Desde hoy hasta el 2 de noviembre de 2026')
+      check('empieza mañana', dates('2026-10-18', '2026-11-02') === 'Desde mañana hasta el 2 de noviembre de 2026')
+      check('hoy es el último día (el último día cuenta entero)',
+        dates('2026-10-01', '2026-10-17') === 'Hoy es el último día (desde el 1 de octubre de 2026)')
+      check('corte de 2027 con el año', dates('2027-03-01', '2027-03-15') === 'Del 1 al 15 de marzo de 2027')
+      check('año bisiesto: el 29 de febrero y el cruce a marzo',
+        dates('2028-02-29', '2028-02-29') === 'Solo el 29 de febrero de 2028'
+          && dates('2028-02-28', '2028-03-01', day(2028, 2, 1)) === 'Del 28 de febrero al 1 de marzo de 2028')
+      check('el día del cambio de hora cuenta como un día más',
+        dates('2026-10-25', '2026-10-26', day(2026, 10, 24, 23)) === 'Desde mañana hasta el 26 de octubre de 2026'
+          && dates('2026-03-28', '2026-03-29', day(2026, 3, 29, 3)) === 'Hoy es el último día (desde el 28 de marzo de 2026)')
+
+      const label = (start, end) => cutStatusLabel(datedCut({ id: 'x', name: 'X', start, end, parts: [] }, hoy))
+      check('estado: termina hoy', label('2026-10-01', '2026-10-17') === 'Termina hoy')
+      check('estado: en curso con días', label('2026-10-01', '2026-10-20') === 'En curso · 4 días')
+      check('estado: empieza mañana', label('2026-10-18', '2026-10-20') === 'Empieza mañana')
+      check('estado: empieza en N días', label('2026-10-22', '2026-10-30') === 'Empieza en 5 días')
+      check('estado: lejano en meses', label('2027-03-01', '2027-03-15') === 'Empieza en 5 meses', label('2027-03-01', '2027-03-15'))
+
+      check('fin para el aviso de Inicio',
+        untilLabel('2026-10-17', hoy) === 'hasta hoy' && untilLabel('2026-10-18', hoy) === 'hasta mañana'
+          && untilLabel('2026-10-30', hoy) === 'hasta el 30 oct' && untilLabel('2027-01-05', hoy) === 'hasta el 5 ene 2027')
+
+      check('antigüedad en palabras',
+        sourceAgeLabel(0) === 'hoy' && sourceAgeLabel(1) === 'ayer' && sourceAgeLabel(8) === 'hace 8 días')
+      const modificado = day(2026, 10, 9, 8).getTime()
+      check('línea de actualización con la fecha de la fuente',
+        describeSourceUpdate(modificado, hoy.getTime(), hoy)
+          === 'Documento del Ayuntamiento actualizado el 9 de octubre de 2026 (hace 8 días)',
+        describeSourceUpdate(modificado, hoy.getTime(), hoy))
+      check('línea de actualización sin fecha de la fuente',
+        describeSourceUpdate(null, day(2026, 10, 17, 9).getTime(), hoy)
+          === 'Consultado el 17 de octubre de 2026 a las 09:30 (la fuente no indica su fecha)',
+        describeSourceUpdate(null, day(2026, 10, 17, 9).getTime(), hoy))
+      check('una fuente con fecha de mañana (reloj descuadrado) no dice «hoy»',
+        describeSourceUpdate(day(2026, 10, 18, 8).getTime(), hoy.getTime(), hoy)
+          === 'Documento del Ayuntamiento actualizado el 18 de octubre de 2026',
+        describeSourceUpdate(day(2026, 10, 18, 8).getTime(), hoy.getTime(), hoy))
+      check('antigüedad de la fuente en sus días límite',
+        describeSourceUpdate(day(2026, 10, 16, 23).getTime(), hoy.getTime(), hoy).endsWith('(ayer)')
+          && describeSourceUpdate(day(2026, 10, 14, 8).getTime(), hoy.getTime(), hoy).endsWith('(hace 3 días)')
+          && !isSourceStale(day(2026, 10, 14, 8).getTime(), hoy) && isSourceStale(day(2026, 10, 13, 8).getTime(), hoy))
+
+      const mk = (id, start, end) => ({ id, name: id, start, end, parts: [] })
+      const lista = [mk('c', '2027-03-01', '2027-03-15'), mk('a', '2026-10-17', '2026-10-30'),
+        mk('d', '2026-12-01', '2026-12-05'), mk('b', '2026-10-20', '2026-10-22'), mk('z', '2026-09-01', '2026-10-01')]
+      check('los programados más adelante van por inicio y sin los activos, próximos ni terminados',
+        laterCuts(lista, hoy).map((item) => item.cut.id).join() === 'd,c', laterCuts(lista, hoy).map((item) => item.cut.id).join())
     }
 
     // --- Nombres -------------------------------------------------------
