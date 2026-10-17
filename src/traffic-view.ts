@@ -1,22 +1,27 @@
 import { state } from './state'
 import {
   NEAR_METERS,
-  datedCut,
+  STALE_SOURCE_DAYS,
+  UPCOMING_DAYS,
+  cutStatusLabel,
+  describeCutDates,
+  describeSourceUpdate,
   fetchTrafficCuts,
   formatCutName,
   isSourceStale,
+  laterCuts,
   loadLineShapes,
   lineImpacts,
   readCachedCuts,
   relevantCuts,
-  sourceAgeDays,
+  untilLabel,
   writeCachedCuts,
   type DatedCut,
   type LineImpact,
   type LineShape,
   type TrafficCut,
 } from './services/traffic-cuts'
-import { emptyState, esc, icon, lineChip, notice } from './ui'
+import { emptyState, esc, icon, lineChip } from './ui'
 
 /**
  * Cortes de tráfico del Ayuntamiento: carga, refresco y pintado.
@@ -180,10 +185,29 @@ export function renderTrafficCutsNotice(): string {
     return ''
   }
 
-  const names = Array.from(new Set(affecting.map((item) => shortName(item.cut.name))))
-  const shown = names.slice(0, 2).join(', ')
-  const rest = names.length - 2
-  const where = rest > 0 ? `${shown} y ${rest} más` : names.length === 2 ? names.join(' y ') : shown
+  // Un nombre puede repetirse en varios cortes: cuenta el último día de todos ellos.
+  const endByName = new Map<string, string>()
+  for (const item of affecting) {
+    const name = shortName(item.cut.name)
+    const known = endByName.get(name)
+    endByName.set(name, known && known > item.cut.end ? known : item.cut.end)
+  }
+  const names = Array.from(endByName.keys())
+  const today = new Date()
+
+  // Con una o dos calles cada una lleva su fin; con más, un solo rango para no alargar el aviso.
+  const label = (name: string) => `${name} (${untilLabel(endByName.get(name) ?? '', today)})`
+  const where = names.length === 1
+    ? `${names[0]}, ${untilLabel(endByName.get(names[0]) ?? '', today)}`
+    : names.length === 2
+      ? names.map(label).join(' y ')
+      : `${names.slice(0, 2).join(', ')} y ${names.length - 2} más`
+  const ends = Array.from(endByName.values()).sort()
+  const endsLine = names.length > 2
+    ? ends[0] === ends[ends.length - 1]
+      ? `Todas ${untilLabel(ends[0], today)}`
+      : `Terminan entre ${endDay(ends[0], today)} y ${endDay(ends[ends.length - 1], today)}`
+    : ''
 
   const lineIds = sortedLineIds(affecting.flatMap((item) => impactsByCut.get(item.cut.id) ?? []))
   const chips = lineIds.slice(0, NOTICE_MAX_LINES).map(chipFor).join('')
@@ -194,6 +218,7 @@ export function renderTrafficCutsNotice(): string {
       ${icon('warn')}
       <div class="traffic-notice-copy">
         <strong>${names.length === 1 ? 'Calle cortada al tráfico' : 'Calles cortadas al tráfico'}: ${esc(where)}</strong>
+        ${endsLine ? `<span>${esc(endsLine)}.</span>` : ''}
         <span>Puede afectar a ${lineIds.length === 1 ? 'la línea' : 'las líneas'}:</span>
         <span class="chip-row">${chips}${more}</span>
       </div>
@@ -230,42 +255,58 @@ export function renderTrafficCutsSection(): string {
 
   const today = new Date()
   const items = relevantCuts(cuts, today)
-  const later = cuts.filter((cut) => datedCut(cut, today).status === 'later').length
+  const later = laterCuts(cuts, today)
   const hasActive = items.some((item) => item.status === 'active')
 
-  const body = items.length === 0
-    ? `<div class="card-body">${emptyState(
-        'check',
-        'Sin cortes de tráfico',
-        later > 0
-          ? `No hay ningún corte en curso ni previsto en los próximos días. Hay ${later === 1 ? '1 programado' : `${later} programados`} para más adelante.`
-          : 'No hay ningún corte en curso ni previsto en los próximos días.',
-      )}</div>`
-    : items.map((item) => renderCut(item, today)).join('')
-
   // La fecha que cuenta es la de la fuente: la de descarga solo dice cuándo se
-  // consultó, y el portal lleva a veces semanas sin cambiar el fichero.
+  // consultó, y el portal lleva a veces semanas sin cambiar el fichero. El aviso
+  // de fuente antigua va dentro de este mismo bloque para no repetir la fecha.
   const stale = isSourceStale(sourceModified, today)
-  const staleNotice = stale && sourceModified !== null
-    ? notice('warn', `La fuente lleva ${sourceAgeDays(sourceModified, today)} días sin actualizarse: puede haber cortes que no aparecen aquí.`)
+  const updated = `
+    <div class="traffic-updated${stale ? ' is-warn' : ''}" role="status">
+      ${icon(stale ? 'warn' : 'clock')}
+      <div class="traffic-updated-copy">
+        <strong>${esc(describeSourceUpdate(sourceModified, fetchedAt, today))}</strong>
+        ${
+          stale
+            ? `<span>Lleva más de ${STALE_SOURCE_DAYS} días sin cambios: puede haber cortes recientes que aún no aparecen aquí.</span>`
+            : ''
+        }
+      </div>
+    </div>
+  `
+
+  const soon = items.length === 0
+    ? `<section class="card traffic-card"><div class="card-body">${emptyState(
+        'check',
+        'Sin cortes en curso ni próximos',
+        'No hay ningún corte en curso ni previsto en los próximos días.',
+      )}</div></section>`
+    : `<section class="card traffic-card">${items.map((item) => renderCut(item, today)).join('')}</section>`
+
+  const soonGroup = later.length > 0 && items.length > 0
+    ? `<h3 class="traffic-group">En curso y próximos ${UPCOMING_DAYS} días</h3>${soon}`
+    : soon
+
+  const laterGroup = later.length > 0
+    ? `
+      <h3 class="traffic-group">Programados más adelante</h3>
+      <section class="card traffic-card">${later.map((item) => renderCut(item, today)).join('')}</section>
+    `
     : ''
-  const updated = sourceModified !== null
-    ? `Datos del Ayuntamiento actualizados por última vez el ${esc(formatSourceDay(sourceModified, today))}.`
-    : `Datos abiertos del Ayuntamiento de Salamanca, actualizados el ${esc(formatUpdated(fetchedAt))}.`
 
   return `
     ${head}
-    ${staleNotice}
-    <section class="card traffic-card">
-      ${body}
-    </section>
+    ${updated}
+    ${soonGroup}
     ${
       items.length > 0 && !hasActive
         ? '<p class="text-tiny">Ahora mismo no hay ningún corte en curso; los de arriba empiezan en los próximos días.</p>'
         : ''
     }
+    ${laterGroup}
     <p class="text-tiny">
-      ${updated}
+      Las fechas son días completos: la fuente no indica la hora de inicio ni de fin.
       Las líneas se estiman por cercanía de su trazado al corte (a menos de ${NEAR_METERS} m de la calle): no es un
       aviso oficial de desvíos y un corte puede dejar un carril libre.
     </p>
@@ -288,9 +329,7 @@ function renderCut(item: DatedCut, today: Date): string {
     `
   }
 
-  const status = item.status === 'active'
-    ? `<span class="pill is-warn">${item.daysLeft <= 1 ? 'Termina hoy' : `En curso · ${item.daysLeft} días`}</span>`
-    : `<span class="pill">${item.daysToStart === 1 ? 'Empieza mañana' : `Empieza en ${item.daysToStart} días`}</span>`
+  const status = `<span class="pill${item.status === 'active' ? ' is-warn' : ''}">${esc(cutStatusLabel(item))}</span>`
 
   return `
     <div class="traffic-cut">
@@ -298,7 +337,7 @@ function renderCut(item: DatedCut, today: Date): string {
         <strong class="traffic-cut-name">${esc(formatCutName(cut.name))}</strong>
         ${status}
       </div>
-      <p class="text-tiny">${esc(formatRange(cut.start, cut.end, today))}</p>
+      <p class="traffic-cut-dates">${esc(describeCutDates(cut, today))}</p>
       ${lines}
     </div>
   `
@@ -323,26 +362,7 @@ function shortName(name: string): string {
   return formatCutName(name.replace(/\s*\(.*$/, '').trim() || name)
 }
 
-/** "14 jul – 1 sep" (con el año solo cuando no es el actual). */
-function formatRange(start: string, end: string, today: Date): string {
-  return start === end
-    ? formatDay(start, today)
-    : `${formatDay(start, today)} – ${formatDay(end, today)}`
-}
-
-function formatDay(iso: string, today: Date): string {
-  const [year, month, day] = iso.split('-').map((part) => Number.parseInt(part, 10))
-  const label = new Date(year, month - 1, day).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })
-  return year === today.getFullYear() ? label : `${label} ${year}`
-}
-
-/** "9 de octubre" (con el año solo cuando no es el actual). */
-function formatSourceDay(at: number, today: Date): string {
-  const date = new Date(at)
-  const label = date.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })
-  return date.getFullYear() === today.getFullYear() ? label : `${label} de ${date.getFullYear()}`
-}
-
-function formatUpdated(at: number): string {
-  return new Date(at).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+/** «hoy», «mañana» o «el 30 sep»: para decir entre qué días terminan varios cortes. */
+function endDay(end: string, today: Date): string {
+  return untilLabel(end, today).replace(/^hasta /, '')
 }
