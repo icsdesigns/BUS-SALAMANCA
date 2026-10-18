@@ -3699,3 +3699,48 @@ button.card-head {
 .traffic-cut .chip-row {
   margin-top: 0;
 }
+
+/* Fecha de actualizacion del documento: siempre visible, justo bajo el titulo. */
+.traffic-updated {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.traffic-updated.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.traffic-updated svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 1px;
+}
+
+.traffic-updated-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.traffic-group {
+  padding: 4px 2px 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.traffic-cut-dates {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-2);
+}

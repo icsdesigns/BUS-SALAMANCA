@@ -285,6 +285,141 @@ export function relevantCuts(cuts: TrafficCut[], today: Date, horizonDays = UPCO
     })
 }
 
+/** Cortes con fecha de inicio más allá del horizonte de aviso, por inicio. */
+export function laterCuts(cuts: TrafficCut[], today: Date, horizonDays = UPCOMING_DAYS): DatedCut[] {
+  return cuts
+    .map((cut) => datedCut(cut, today, horizonDays))
+    .filter((item) => item.status === 'later')
+    .sort((left, right) => left.cut.start.localeCompare(right.cut.start) || left.cut.name.localeCompare(right.cut.name, 'es'))
+}
+
+/* ------------------------------------------------------------------ *
+ * Fechas para mostrar                                                  *
+ * ------------------------------------------------------------------ */
+
+/*
+ * Los nombres de los meses van aquí y no salen de `toLocaleDateString`: así el
+ * texto es el mismo en cualquier móvil (y en las pruebas) sin depender del ICU
+ * ni del idioma del dispositivo. La fuente solo da días, sin hora, y el último
+ * día cuenta entero.
+ */
+const MONTHS = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+]
+const MONTHS_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+
+function isoParts(iso: string): { year: number, month: number, day: number } {
+  const [year, month, day] = iso.split('-').map((part) => Number.parseInt(part, 10))
+  return { year, month, day }
+}
+
+/** "2026-09-01" -> "1 de septiembre de 2026" (el año siempre, sin ambigüedad). */
+export function formatLongDay(iso: string): string {
+  const { year, month, day } = isoParts(iso)
+  return `${day} de ${MONTHS[month - 1]} de ${year}`
+}
+
+/** "2026-09-01" -> "1 de septiembre" (sin año: para el primer extremo de un rango). */
+function formatDayMonth(iso: string): string {
+  const { month, day } = isoParts(iso)
+  return `${day} de ${MONTHS[month - 1]}`
+}
+
+/** "2026-09-30" -> "30 sep" (con el año solo cuando no es el actual). */
+export function formatShortDay(iso: string, today: Date): string {
+  const { year, month, day } = isoParts(iso)
+  const label = `${day} ${MONTHS_SHORT[month - 1]}`
+  return year === today.getFullYear() ? label : `${label} ${year}`
+}
+
+/**
+ * Fechas de un corte con el año siempre en el rango completo:
+ *
+ *   - «Del 14 de julio al 1 de septiembre de 2026»
+ *   - «Del 20 de diciembre de 2026 al 10 de enero de 2027» (si cruza de año)
+ *   - «Solo el 28 de agosto de 2026» (inicio = fin); «Solo hoy» / «Solo mañana»
+ *   - «Desde hoy hasta el 1 de septiembre de 2026» / «Desde mañana hasta …»
+ *   - «Hoy es el último día (desde el 14 de julio de 2026)»
+ */
+export function describeCutDates(cut: Pick<TrafficCut, 'start' | 'end'>, today: Date): string {
+  const now = dayNumber(localIsoDay(today))
+  const start = dayNumber(cut.start)
+  const end = dayNumber(cut.end)
+
+  if (cut.start === cut.end) {
+    if (start === now) {
+      return `Solo hoy (${formatLongDay(cut.start)})`
+    }
+    return start === now + 1 ? `Solo mañana (${formatLongDay(cut.start)})` : `Solo el ${formatLongDay(cut.start)}`
+  }
+
+  if (end === now) {
+    return `Hoy es el último día (desde el ${formatLongDay(cut.start)})`
+  }
+  if (start === now) {
+    return `Desde hoy hasta el ${formatLongDay(cut.end)}`
+  }
+  if (start === now + 1) {
+    return `Desde mañana hasta el ${formatLongDay(cut.end)}`
+  }
+
+  const sameYear = isoParts(cut.start).year === isoParts(cut.end).year
+  const sameMonth = sameYear && isoParts(cut.start).month === isoParts(cut.end).month
+  const from = sameMonth ? String(isoParts(cut.start).day) : sameYear ? formatDayMonth(cut.start) : formatLongDay(cut.start)
+  return `Del ${from} al ${formatLongDay(cut.end)}`
+}
+
+/** Etiqueta de estado de un corte: «Termina hoy», «En curso · 5 días», «Empieza mañana», «Empieza en 3 meses». */
+export function cutStatusLabel(item: Pick<DatedCut, 'status' | 'daysToStart' | 'daysLeft'>): string {
+  if (item.status === 'active') {
+    return item.daysLeft <= 1 ? 'Termina hoy' : `En curso · ${item.daysLeft} días`
+  }
+  if (item.daysToStart === 1) {
+    return 'Empieza mañana'
+  }
+  if (item.daysToStart >= 60) {
+    return `Empieza en ${Math.round(item.daysToStart / 30)} meses`
+  }
+  return `Empieza en ${item.daysToStart} días`
+}
+
+/** Fin de un corte para el aviso compacto: «hasta hoy», «hasta mañana», «hasta el 30 sep». */
+export function untilLabel(end: string, today: Date): string {
+  const days = dayNumber(end) - dayNumber(localIsoDay(today))
+  if (days <= 0) {
+    return 'hasta hoy'
+  }
+  return days === 1 ? 'hasta mañana' : `hasta el ${formatShortDay(end, today)}`
+}
+
+/** «hoy», «ayer» o «hace N días» según los días civiles que lleva la fuente sin cambiar. */
+export function sourceAgeLabel(days: number): string {
+  return days <= 0 ? 'hoy' : days === 1 ? 'ayer' : `hace ${days} días`
+}
+
+/**
+ * Línea de «cuándo se actualizó el documento».
+ *
+ * Con la fecha de la fuente (`Last-Modified`): «Documento del Ayuntamiento
+ * actualizado el 9 de octubre de 2026 (hace 8 días)». Sin ella (el navegador no
+ * la ve y el servidor puede no mandarla) solo se puede decir cuándo se consultó.
+ */
+export function describeSourceUpdate(sourceModified: number | null, fetchedAt: number, today: Date): string {
+  if (sourceModified !== null) {
+    const date = localIsoDay(new Date(sourceModified))
+    const line = `Documento del Ayuntamiento actualizado el ${formatLongDay(date)}`
+    // Una fecha de otro día por venir (reloj descuadrado) no es «hoy»: va sin antigüedad.
+    return dayNumber(date) > dayNumber(localIsoDay(today))
+      ? line
+      : `${line} (${sourceAgeLabel(sourceAgeDays(sourceModified, today))})`
+  }
+
+  const when = new Date(fetchedAt)
+  const time = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+  return `Consultado el ${formatLongDay(localIsoDay(when))} a las ${time} (la fuente no indica su fecha)`
+}
+
 /* ------------------------------------------------------------------ *
  * Descarga y parseo                                                    *
  * ------------------------------------------------------------------ */
@@ -432,6 +567,12 @@ export interface CachedCuts {
   cuts: TrafficCut[]
 }
 
+/** `YYYY-MM-DD`: un corte de la caché con otra cosa se pintaría con fechas imposibles. */
+function isIsoDay(value: unknown): value is string {
+  const match = typeof value === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : null
+  return match !== null && parseCutDate(`${match[3]}/${match[2]}/${match[1]}`) === value
+}
+
 /** Último resultado bueno guardado, o null si no hay (o no se puede leer). */
 export function readCachedCuts(): CachedCuts | null {
   try {
@@ -448,7 +589,7 @@ export function readCachedCuts(): CachedCuts | null {
     const cuts = payload.cuts.filter(
       (cut): cut is TrafficCut =>
         Boolean(cut) && typeof cut.id === 'string' && typeof cut.name === 'string'
-        && typeof cut.start === 'string' && typeof cut.end === 'string' && Array.isArray(cut.parts),
+        && isIsoDay(cut.start) && isIsoDay(cut.end) && cut.start <= cut.end && Array.isArray(cut.parts),
     )
     const sourceModified = payload.v === 2 && Number.isFinite(payload.sourceModified)
       ? (payload.sourceModified as number)
