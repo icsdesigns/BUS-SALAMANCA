@@ -85,7 +85,7 @@ import {
 } from './state'
 import type { NetworkStop, StopFeed } from './types'
 import { patch } from './dom'
-import { initTrafficCuts, refreshTrafficCuts } from './traffic-view'
+import { initTrafficCuts, refreshTrafficCuts, toggleTrafficCutsPanel } from './traffic-view'
 import { esc, liveMinutes, readableTextColor } from './ui'
 import {
   describeArrival,
@@ -3235,6 +3235,12 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       render()
       return
     }
+
+    case 'toggle-traffic-cuts':
+      // Panel de cortes de Inicio: su estado vive en traffic-view y sobrevive al repintado.
+      toggleTrafficCutsPanel()
+      render()
+      return
 
     case 'info-section': {
       const section = element.dataset.section as InfoSection | undefined

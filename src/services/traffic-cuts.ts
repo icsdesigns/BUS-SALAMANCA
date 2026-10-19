@@ -285,6 +285,23 @@ export function relevantCuts(cuts: TrafficCut[], today: Date, horizonDays = UPCO
     })
 }
 
+/** Días de antelación con los que el icono de aviso de Inicio se ilumina por un corte aún no empezado. */
+export const ALERT_SOON_DAYS = 3
+
+/**
+ * Cortes que justifican iluminar el aviso de Inicio: los que están en curso y los
+ * que empiezan en `soonDays` días o menos (hoy cuenta 0, mañana 1). Los que
+ * empiezan más tarde o ya terminaron no entran.
+ *
+ * Mismo orden que `relevantCuts`: primero los en curso, por fin; luego los
+ * próximos, por inicio; y a igualdad, por nombre. Los días se cuentan como días
+ * civiles locales, así que ni la zona horaria ni el cambio de hora lo alteran.
+ */
+export function alertCuts(cuts: TrafficCut[], today: Date, soonDays = ALERT_SOON_DAYS): DatedCut[] {
+  // Con `soonDays` como horizonte, `upcoming` ya significa «empieza en ≤ soonDays días».
+  return relevantCuts(cuts, today, soonDays)
+}
+
 /** Cortes con fecha de inicio más allá del horizonte de aviso, por inicio. */
 export function laterCuts(cuts: TrafficCut[], today: Date, horizonDays = UPCOMING_DAYS): DatedCut[] {
   return cuts

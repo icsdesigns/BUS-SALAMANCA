@@ -1964,7 +1964,7 @@ async function main() {
       formatCutName, readCachedCuts, writeCachedCuts,
       parseHttpDate, headerValue, sourceModifiedFromHeaders, sourceAgeDays, isSourceStale, STALE_SOURCE_DAYS,
       laterCuts, formatLongDay, formatShortDay, describeCutDates, cutStatusLabel, untilLabel, sourceAgeLabel,
-      describeSourceUpdate,
+      describeSourceUpdate, alertCuts, ALERT_SOON_DAYS,
     } = cutsApi
 
     const sampleText = await fs.readFile(
@@ -2222,6 +2222,105 @@ async function main() {
         mk('d', '2026-12-01', '2026-12-05'), mk('b', '2026-10-20', '2026-10-22'), mk('z', '2026-09-01', '2026-10-01')]
       check('los programados más adelante van por inicio y sin los activos, próximos ni terminados',
         laterCuts(lista, hoy).map((item) => item.cut.id).join() === 'd,c', laterCuts(lista, hoy).map((item) => item.cut.id).join())
+    }
+
+    // --- Cortes que iluminan el aviso de Inicio ---------------------------
+    {
+      const mk = (id, start, end, name = id) => ({ id, name, start, end, parts: [] })
+      const ids = (list) => list.map((item) => item.cut.id).join()
+      const hoy = day(2026, 10, 17)
+
+      check('el aviso mira 3 días por delante', ALERT_SOON_DAYS === 3)
+      check('lista vacía: sin avisos', alertCuts([], hoy).length === 0)
+      check('en curso hoy: avisa y conserva el estado',
+        ids(alertCuts([mk('a', '2026-10-10', '2026-10-25')], hoy)) === 'a'
+          && alertCuts([mk('a', '2026-10-10', '2026-10-25')], hoy)[0].status === 'active'
+          && alertCuts([mk('a', '2026-10-10', '2026-10-25')], hoy)[0].daysLeft === 9)
+      check('termina hoy: todavía avisa', ids(alertCuts([mk('a', '2026-10-01', '2026-10-17')], hoy)) === 'a')
+      check('terminó ayer: ya no avisa', alertCuts([mk('a', '2026-10-01', '2026-10-16')], hoy).length === 0)
+      check('empieza hoy: avisa como en curso', (() => {
+        const [item] = alertCuts([mk('a', '2026-10-17', '2026-10-30')], hoy)
+        return item !== undefined && item.status === 'active' && item.daysToStart === 0
+      })())
+      check('empieza mañana: avisa', (() => {
+        const [item] = alertCuts([mk('a', '2026-10-18', '2026-10-30')], hoy)
+        return item !== undefined && item.status === 'upcoming' && item.daysToStart === 1
+      })())
+      check('empieza en 3 días: entra', (() => {
+        const [item] = alertCuts([mk('a', '2026-10-20', '2026-10-30')], hoy)
+        return item !== undefined && item.daysToStart === 3
+      })())
+      check('empieza en 4 días: no entra', alertCuts([mk('a', '2026-10-21', '2026-10-30')], hoy).length === 0)
+      check('a 7 días es relevante para la lista pero no para el aviso',
+        ids(relevantCuts([mk('a', '2026-10-24', '2026-10-30')], hoy)) === 'a'
+          && alertCuts([mk('a', '2026-10-24', '2026-10-30')], hoy).length === 0)
+      check('el umbral se puede cambiar',
+        ids(alertCuts([mk('a', '2026-10-21', '2026-10-30')], hoy, 4)) === 'a'
+          && alertCuts([mk('a', '2026-10-18', '2026-10-30')], hoy, 0).length === 0
+          && ids(alertCuts([mk('a', '2026-10-17', '2026-10-30')], hoy, 0)) === 'a')
+
+      // Orden: en curso por fin, luego próximos por inicio, y a igualdad por nombre.
+      const mezcla = [
+        mk('p3', '2026-10-20', '2026-10-22'), mk('lejano', '2026-10-30', '2026-11-02'),
+        mk('f4', '2026-10-05', '2026-10-30'), mk('terminado', '2026-09-01', '2026-10-01'),
+        mk('p1', '2026-10-18', '2026-10-19'), mk('f1', '2026-10-01', '2026-10-18'),
+        mk('f1b', '2026-10-10', '2026-10-18', 'AAA'), mk('p1b', '2026-10-18', '2026-10-25', 'AAA'),
+        mk('f2', '2026-10-12', '2026-10-20'), mk('p2', '2026-10-19', '2026-10-21'),
+      ]
+      check('en curso y próximos, con su orden; sin lejanos ni terminados',
+        ids(alertCuts(mezcla, hoy)) === 'f1b,f1,f2,f4,p1b,p1,p2,p3', ids(alertCuts(mezcla, hoy)))
+      check('el aviso es la lista de relevantes recortada a 3 días',
+        ids(alertCuts(mezcla, hoy)) === ids(relevantCuts(mezcla, hoy, 3)))
+      check('no altera la lista de entrada', mezcla[0].id === 'p3' && mezcla.length === 10)
+
+      // Inicio = fin: un corte de un solo día.
+      check('corte de un día: hoy, mañana y dentro de 3 días entran; dentro de 4 no',
+        ids(alertCuts([mk('a', '2026-10-17', '2026-10-17')], hoy)) === 'a'
+          && ids(alertCuts([mk('a', '2026-10-18', '2026-10-18')], hoy)) === 'a'
+          && ids(alertCuts([mk('a', '2026-10-20', '2026-10-20')], hoy)) === 'a'
+          && alertCuts([mk('a', '2026-10-21', '2026-10-21')], hoy).length === 0
+          && alertCuts([mk('a', '2026-10-16', '2026-10-16')], hoy).length === 0)
+
+      // Cruce de mes y de año.
+      const finDeMes = day(2026, 10, 30)
+      check('cruce de mes: el 2 de noviembre está a 3 días del 30 de octubre',
+        ids(alertCuts([mk('a', '2026-11-02', '2026-11-05')], finDeMes)) === 'a'
+          && alertCuts([mk('a', '2026-11-03', '2026-11-05')], finDeMes).length === 0)
+      const finDeAno = day(2026, 12, 30)
+      check('cruce de año: el 2 de enero está a 3 días del 30 de diciembre',
+        ids(alertCuts([mk('a', '2027-01-02', '2027-01-10')], finDeAno)) === 'a'
+          && alertCuts([mk('a', '2027-01-03', '2027-01-10')], finDeAno).length === 0
+          && ids(alertCuts([mk('a', '2026-12-20', '2027-01-10')], finDeAno)) === 'a')
+      check('el 29 de febrero bisiesto cuenta como día',
+        ids(alertCuts([mk('a', '2028-03-01', '2028-03-05')], day(2028, 2, 27))) === 'a'
+          && alertCuts([mk('a', '2028-03-02', '2028-03-05')], day(2028, 2, 27)).length === 0
+          && ids(alertCuts([mk('a', '2029-03-01', '2029-03-05')], day(2029, 2, 26))) === 'a')
+
+      // Zona horaria: con cualquier TZ del proceso, el día civil local manda y la
+      // hora del día (incluida la medianoche) o el cambio de hora no lo mueven.
+      const horas = [0, 1, 3, 12, 23]
+      check('la hora del día no cambia el resultado',
+        horas.every((h) => {
+          const hoyH = day(2026, 10, 17, h)
+          return ids(alertCuts([mk('f', '2026-10-01', '2026-10-17'), mk('p', '2026-10-20', '2026-10-25'), mk('n', '2026-10-21', '2026-10-25')], hoyH)) === 'f,p'
+        }))
+      check('un minuto antes y después de medianoche',
+        ids(alertCuts([mk('a', '2026-10-18', '2026-10-20')], new Date(2026, 9, 17, 23, 59))) === 'a'
+          && alertCuts([mk('a', '2026-10-18', '2026-10-20')], new Date(2026, 9, 17, 23, 59))[0].daysToStart === 1
+          && alertCuts([mk('a', '2026-10-18', '2026-10-20')], new Date(2026, 9, 18, 0, 1))[0].status === 'active')
+      check('días de cambio de hora (Madrid y Nueva York): siempre 3 días son 3 días',
+        [[2026, 3, 26], [2026, 3, 27], [2026, 3, 28], [2026, 3, 29], [2026, 10, 22], [2026, 10, 24], [2026, 10, 25],
+          [2026, 3, 5], [2026, 3, 8], [2026, 10, 30], [2026, 11, 1]].every(([y, m, d]) => {
+          const base = new Date(Date.UTC(y, m - 1, d))
+          const iso = (offset) => new Date(base.getTime() + offset * 86_400_000).toISOString().slice(0, 10)
+          return [0, 1, 3, 23].every((h) => {
+            const hoyH = day(y, m, d, h)
+            return ids(alertCuts([mk('x', iso(3), iso(5))], hoyH)) === 'x'
+              && alertCuts([mk('y', iso(4), iso(5))], hoyH).length === 0
+              && ids(alertCuts([mk('z', iso(-5), iso(0))], hoyH)) === 'z'
+              && alertCuts([mk('w', iso(-5), iso(-1))], hoyH).length === 0
+          })
+        }))
     }
 
     // --- Nombres -------------------------------------------------------

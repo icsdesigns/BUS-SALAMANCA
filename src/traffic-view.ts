@@ -1,8 +1,10 @@
 import { state } from './state'
 import {
+  ALERT_SOON_DAYS,
   NEAR_METERS,
   STALE_SOURCE_DAYS,
   UPCOMING_DAYS,
+  alertCuts,
   cutStatusLabel,
   describeCutDates,
   describeSourceUpdate,
@@ -14,7 +16,6 @@ import {
   lineImpacts,
   readCachedCuts,
   relevantCuts,
-  untilLabel,
   writeCachedCuts,
   type DatedCut,
   type LineImpact,
@@ -47,9 +48,6 @@ const MIN_REFRESH_MS = 3 * 60 * 60 * 1000
 /** Tras un fallo, cuánto se espera para intentarlo otra vez. */
 const RETRY_AFTER_FAILURE_MS = 15 * 60 * 1000
 
-/** Líneas que se pintan en el aviso de Inicio antes de resumir el resto. */
-const NOTICE_MAX_LINES = 12
-
 type Phase = 'idle' | 'loading' | 'ok' | 'error'
 
 let cuts: TrafficCut[] = []
@@ -66,9 +64,17 @@ let shapes: LineShape[] | null = null
 let shapesPromise: Promise<LineShape[] | null> | null = null
 let impactsByCut = new Map<string, LineImpact[]>()
 
+/** Panel de cortes de Inicio desplegado. Solo en memoria: al reabrir la app vuelve plegado. */
+let panelOpen = false
+
 /* ------------------------------------------------------------------ *
  * Carga                                                                *
  * ------------------------------------------------------------------ */
+
+/** Pliega o despliega el panel de cortes de Inicio; quien lo llama repinta. */
+export function toggleTrafficCutsPanel(): void {
+  panelOpen = !panelOpen
+}
 
 /** Arranca la carga: primero la caché, luego la red. Se llama una vez al arrancar. */
 export function initTrafficCuts(onChange: () => void): void {
@@ -171,59 +177,94 @@ async function recomputeImpacts(): Promise<void> {
  * ------------------------------------------------------------------ */
 
 /**
- * Aviso compacto para Inicio.
+ * Icono de aviso de Inicio, con el panel de cortes que se despliega debajo.
  *
- * Solo sale si hay un corte EN CURSO que toca alguna línea: un corte que no
- * afecta a ninguna no es un aviso para quien espera el autobús, y los próximos
- * tienen su sitio en Info.
+ * El icono está siempre. Apagado cuando no hay ningún corte en curso ni previsto
+ * en los próximos `ALERT_SOON_DAYS` días; iluminado, con el número de cortes,
+ * cuando los hay. Cuentan todos, afecten o no al trazado de alguna línea: lo que
+ * se quiere saber es si la ciudad tiene calles cortadas. Plegado por defecto.
  */
 export function renderTrafficCutsNotice(): string {
-  const affecting = relevantCuts(cuts, new Date()).filter(
-    (item) => item.status === 'active' && (impactsByCut.get(item.cut.id)?.length ?? 0) > 0,
-  )
-  if (affecting.length === 0) {
-    return ''
-  }
-
-  // Un nombre puede repetirse en varios cortes: cuenta el último día de todos ellos.
-  const endByName = new Map<string, string>()
-  for (const item of affecting) {
-    const name = shortName(item.cut.name)
-    const known = endByName.get(name)
-    endByName.set(name, known && known > item.cut.end ? known : item.cut.end)
-  }
-  const names = Array.from(endByName.keys())
   const today = new Date()
+  const alerts = alertCuts(cuts, today)
+  const lit = alerts.length > 0
+  const count = alerts.length
 
-  // Con una o dos calles cada una lleva su fin; con más, un solo rango para no alargar el aviso.
-  const label = (name: string) => `${name} (${untilLabel(endByName.get(name) ?? '', today)})`
-  const where = names.length === 1
-    ? `${names[0]}, ${untilLabel(endByName.get(names[0]) ?? '', today)}`
-    : names.length === 2
-      ? names.map(label).join(' y ')
-      : `${names.slice(0, 2).join(', ')} y ${names.length - 2} más`
-  const ends = Array.from(endByName.values()).sort()
-  const endsLine = names.length > 2
-    ? ends[0] === ends[ends.length - 1]
-      ? `Todas ${untilLabel(ends[0], today)}`
-      : `Terminan entre ${endDay(ends[0], today)} y ${endDay(ends[ends.length - 1], today)}`
-    : ''
-
-  const lineIds = sortedLineIds(affecting.flatMap((item) => impactsByCut.get(item.cut.id) ?? []))
-  const chips = lineIds.slice(0, NOTICE_MAX_LINES).map(chipFor).join('')
-  const more = lineIds.length > NOTICE_MAX_LINES ? `<span class="text-tiny">+${lineIds.length - NOTICE_MAX_LINES}</span>` : ''
+  // Sin datos todavía (cargando o sin red), apagado no puede decir «sin cortes».
+  const unknown = fetchedAt === null
+  const caption = lit
+    ? `${count} ${count === 1 ? 'corte' : 'cortes'} de tráfico`
+    : unknown
+      ? phase === 'idle' || phase === 'loading' ? 'Consultando cortes de tráfico' : 'Cortes de tráfico: sin datos'
+      : 'Sin cortes de tráfico'
+  const label = lit
+    ? `${caption}, en curso o ${count === 1 ? 'previsto' : 'previstos'} en los próximos ${ALERT_SOON_DAYS} días`
+    : unknown
+      ? caption
+      : `${caption} activos ni previstos en los próximos ${ALERT_SOON_DAYS} días`
 
   return `
-    <div class="notice is-warn traffic-notice" role="status">
-      ${icon('warn')}
-      <div class="traffic-notice-copy">
-        <strong>${names.length === 1 ? 'Calle cortada al tráfico' : 'Calles cortadas al tráfico'}: ${esc(where)}</strong>
-        ${endsLine ? `<span>${esc(endsLine)}.</span>` : ''}
-        <span>Puede afectar a ${lineIds.length === 1 ? 'la línea' : 'las líneas'}:</span>
-        <span class="chip-row">${chips}${more}</span>
-      </div>
-      <button class="btn btn-secondary btn-sm" type="button" data-action="tab" data-tab="info">Detalle</button>
+    <div class="traffic-alert${lit ? ' is-lit' : ''}">
+      <button
+        class="traffic-alert-toggle"
+        type="button"
+        data-action="toggle-traffic-cuts"
+        aria-expanded="${panelOpen ? 'true' : 'false'}"
+        ${panelOpen ? 'aria-controls="traffic-cuts-panel"' : ''}
+        aria-label="${esc(`${label}. ${panelOpen ? 'Ocultar' : 'Ver'} información de cortes`)}"
+      >
+        <span class="traffic-alert-icon">
+          ${icon('warn')}
+          ${lit ? `<span class="traffic-alert-badge" aria-hidden="true">${count}</span>` : ''}
+        </span>
+        <span class="traffic-alert-caption">${esc(caption)}</span>
+        ${icon('chevronDown', 'traffic-alert-chevron')}
+      </button>
+      ${panelOpen ? renderAlertPanel(alerts, today) : ''}
     </div>
+  `
+}
+
+/** Panel desplegado: los cortes que encienden el icono o, si no hay, por qué está apagado. */
+function renderAlertPanel(alerts: DatedCut[], today: Date): string {
+  let body: string
+
+  if (alerts.length > 0) {
+    body = alerts.map((item) => renderCut(item, today)).join('')
+  } else if (fetchedAt === null) {
+    // Sin datos nunca: un icono apagado no puede pasar por «no hay cortes».
+    body = `<p class="traffic-alert-empty">${
+      phase === 'idle' || phase === 'loading'
+        ? 'Consultando los cortes de tráfico del Ayuntamiento…'
+        : 'No se han podido consultar los cortes de tráfico del Ayuntamiento. Se volverá a intentar cuando haya conexión.'
+    }</p>`
+  } else {
+    body = `<p class="traffic-alert-empty">No hay cortes activos ni previstos en los próximos ${ALERT_SOON_DAYS} días.</p>`
+  }
+
+  // El dato con el que se ha decidido: sin él, «apagado» no dice cuán fiable es.
+  let source = ''
+  if (fetchedAt !== null) {
+    const stale = isSourceStale(sourceModified, today)
+    source = `
+      <div class="traffic-alert-source${stale ? ' is-warn' : ''}">
+        ${icon(stale ? 'warn' : 'clock')}
+        <span>
+          ${esc(describeSourceUpdate(sourceModified, fetchedAt, today))}.
+          ${stale ? `Lleva más de ${STALE_SOURCE_DAYS} días sin cambios: puede haber cortes recientes que aún no aparecen aquí.` : ''}
+        </span>
+      </div>
+    `
+  }
+
+  return `
+    <section class="traffic-alert-panel" id="traffic-cuts-panel" aria-label="Cortes de tráfico">
+      ${body}
+      ${source}
+      <div class="traffic-alert-foot">
+        <button class="btn btn-secondary btn-sm" type="button" data-action="tab" data-tab="info">Ver detalle</button>
+      </div>
+    </section>
   `
 }
 
@@ -355,14 +396,4 @@ function sortedLineIds(impacts: LineImpact[]): string[] {
   return Array.from(new Set(impacts.map((impact) => impact.lineId))).sort((left, right) =>
     left.localeCompare(right, 'es', { numeric: true }),
   )
-}
-
-/** "SAN FELIPE (+IGNACIO DE LOYOLA+...)" -> "San Felipe": para el aviso basta la calle principal. */
-function shortName(name: string): string {
-  return formatCutName(name.replace(/\s*\(.*$/, '').trim() || name)
-}
-
-/** «hoy», «mañana» o «el 30 sep»: para decir entre qué días terminan varios cortes. */
-function endDay(end: string, today: Date): string {
-  return untilLabel(end, today).replace(/^hasta /, '')
 }
