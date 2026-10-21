@@ -20,6 +20,8 @@ import path from 'node:path'
 import { resolveVersion } from './version.mjs'
 
 const CHROME_CANDIDATES = [
+  // Ruta explicita (p. ej. el Chromium de Playwright): CHROME=/ruta/chrome
+  process.env.CHROME,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -56,7 +58,7 @@ function valueOf(flag) {
 }
 
 async function findChrome() {
-  for (const candidate of CHROME_CANDIDATES) {
+  for (const candidate of CHROME_CANDIDATES.filter(Boolean)) {
     try {
       await fs.access(candidate)
       return candidate
@@ -116,6 +118,8 @@ async function main() {
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profile}`,
       `--window-size=${width},${height}`,
+      // Como root (contenedores, CI) Chrome no arranca con el sandbox puesto.
+      ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
       'about:blank',
     ],
     { stdio: 'ignore' },
@@ -147,10 +151,10 @@ async function main() {
       //   350 · el nombre mas largo de la red ("C/ Licenciado Vidriera, s/n
       //         (Frente residencia)", 47 caracteres). Solo se distingue de la
       //         344 por el final, asi que dice si se estan recortando nombres.
-      //   344 · renombrada a mano: comprueba el nombre oficial dentro de la tarjeta
-      //         de la tarjeta.
-      //    41 · la parada con mas lineas de la red (trece): comprueba la franja
-      //         de distintivos y el "+N".
+      //   344 · renombrada a mano: comprueba el nombre oficial en la 2.a fila
+      //         de la columna del nombre.
+      //    41 · la parada con mas lineas de la red (trece): comprueba la columna
+      //         de distintivos y el "+N" (cinco lineas y "+8").
       //
       // Detras, dos paradas corrientes y muy transitadas (222 y 301) para ver
       // la interfaz con datos normales.
@@ -334,6 +338,9 @@ async function main() {
         const out = Array.from(document.querySelectorAll('.stop-card')).map((card) => {
           const name = card.querySelector('.stop-name');
           const lines = card.querySelector('.stop-lines');
+          const box = lines ? lines.getBoundingClientRect() : null;
+          const chips = lines ? Array.from(lines.querySelectorAll('.line-chip')) : [];
+          const opts = Array.from(card.querySelectorAll('.stop-col-opts .mini-btn'));
           return {
             stop: card.getAttribute('data-key'),
             alto: Math.round(card.getBoundingClientRect().height),
@@ -342,6 +349,15 @@ async function main() {
             lineasCortadas: lines ? lines.scrollHeight > lines.clientHeight + 1 : false,
             // Y mas ancho que su hueco, un desbordamiento.
             nombreAncho: name ? name.scrollWidth > name.clientWidth + 1 : false,
+            // Modelo D: seis huecos como mucho, ninguno asomando de su columna.
+            huecos: chips.length,
+            chipFuera: chips.some((chip) => {
+              const r = chip.getBoundingClientRect();
+              return r.left < box.left - 0.5 || r.right > box.right + 0.5 ||
+                r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5;
+            }),
+            opciones: opts.length,
+            opcionBaja: opts.some((btn) => btn.getBoundingClientRect().height < 44),
             derecha: Math.round(card.getBoundingClientRect().right)
           };
         });
@@ -352,14 +368,18 @@ async function main() {
       const vw = Number(await cdp.evaluate('document.documentElement.clientWidth'))
 
       // Ya no se reserva hueco para el peor caso: cada tarjeta mide lo que ocupa.
-      // El techo es el de la parada más cargada de la red (dos renglones de
-      // nombre y dos filas de líneas) con algo de margen.
+      // Lo normal son 88 px (las dos filas de opciones o tres de distintivos);
+      // el techo deja crecer el nombre más largo de la red, que envuelve.
       report('las tarjetas plegadas son compactas', cards.length > 1 && Math.max(...alturas) <= 130,
         `${cards.length} tarjetas · alturas ${alturas.join(', ')} px`)
       report('ningun nombre de parada se corta',
         cards.every((card) => !card.nombreCortado && !card.nombreAncho))
-      report('ninguna franja de lineas se corta',
-        cards.every((card) => !card.lineasCortadas))
+      report('ninguna columna de lineas se corta',
+        cards.every((card) => !card.lineasCortadas && !card.chipFuera))
+      report('como mucho seis huecos de linea (el "+N" cuenta)',
+        cards.every((card) => card.huecos <= 6), cards.map((card) => card.huecos).join(', '))
+      report('opciones en rejilla de 3 o 4 botones de 44 px o más',
+        cards.every((card) => (card.opciones === 3 || card.opciones === 4) && !card.opcionBaja))
       report('ninguna tarjeta se sale de la pantalla',
         cards.every((card) => card.derecha <= vw + 1))
 

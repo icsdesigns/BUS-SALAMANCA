@@ -3049,31 +3049,34 @@ button.card-head {
 
 
 /* ==================================================================
-   Tarjeta de parada guardada (Inicio)
+   Tarjeta de parada guardada (Inicio) · modelo D, "Columnas"
    ==================================================================
 
-   Compacta: dos renglones y nada más.
+   Cuatro columnas separadas por divisores verticales finos, sin tiempos
+   hasta desplegar:
 
-     · Arriba, el nombre y el galón. El nombre tiene el ancho ENTERO de
-       la tarjeta, que es lo que evita que se parta: con el código al
-       lado perdía 50 px, y casi todos los nombres largos pasaban a dos
-       renglones.
-     · Abajo, en una sola franja, el número de parada, las líneas y los
-       botones de administrar.
+     1. Número de parada: columna propia (48 px, caben tres cifras)
+        con fondo suave.
+     2. Nombre: a la izquierda y centrado en vertical. Si la parada se
+        ha renombrado, el nombre oficial va debajo, pequeño y gris. Se
+        queda con todo el ancho que sobra: es la única columna elástica.
+     3. Líneas: fondo suave, distintivos centrados en las dos direcciones
+        (seis huecos como mucho; el "+N" ocupa uno). Ancho FIJO para dos
+        distintivos por fila (72 px; 60 por debajo de 360 px): seis
+        huecos son tres filas, que miden lo mismo que las dos filas de
+        opciones (88 px). Con un ancho
+        elástico, a 320 px quedaba un distintivo por fila —seis filas— y
+        a 360 px el nombre se partía a mitad de palabra.
+     4. Opciones: rejilla 2×2 de botones táctiles (≥ 44 px de alto)
+        separados por divisores. Con tres botones, la celda que sobra se
+        rellena con los mismos divisores (`.is-three`).
 
-   Antes cada tarjeta reservaba hueco para el PEOR caso —dos renglones
-   de nombre y dos filas de líneas— para que todas midieran igual. Pero
-   el peor caso es una parada de 349, así que las demás cargaban con
-   unos 45 px vacíos cada una. Ahora la tarjeta mide lo que ocupa: casi
-   todas quedan iguales (un renglón y una fila), y la que necesita más
-   crece sin recortar nada.
+   No hay galón: la tarjeta entera se despliega al tocar el nombre, el
+   número o las líneas, y el borde resaltado dice que está abierta.
 
-   El nombre oficial de una parada renombrada NO va en la cabecera: se
-   usa para comprobar cuál es, y comprobarlo se hace al abrirla.
-
-   La estructura es siempre la misma —cabecera, franja y cuerpo— y
-   desplegar solo cambia una clase. Es lo que quita los parpadeos:
-   ningún nodo nace ni muere a mitad de la transición. */
+   La estructura es siempre la misma —columnas y cuerpo— y desplegar solo
+   cambia una clase. Es lo que quita los parpadeos: ningún nodo nace ni
+   muere a mitad de la transición. */
 
 .stop-card {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -3084,92 +3087,161 @@ button.card-head {
   box-shadow: var(--shadow-2);
 }
 
-/* Cabecera: nombre y galón, a todo el ancho. */
-.stop-open {
+.stop-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 11px 14px 5px;
+  grid-template-columns: 48px minmax(0, 1fr) 72px 88px;
+  align-items: stretch;
+}
+
+/* Base de las cuatro columnas. Tres de ellas son botones, así que se
+   les quita todo lo del navegador; `min-width: 0` deja que el nombre
+   largo envuelva en vez de empujar la rejilla. */
+.stop-col {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 8px 10px 10px;
   border: 0;
+  border-radius: 0;
   background: transparent;
-  text-align: left;
   color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
-/* Sin recorte de ninguna clase: "C/ Licenciado Vidriera, s/n (Frente
-   residencia)" y "…(Junto Residencia)" solo se distinguen por el final,
-   y son aceras distintas. Si no cabe en un renglón, ocupa dos. */
-.stop-name {
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
+.stop-col + .stop-col {
+  border-left: 1px solid var(--border);
 }
 
-.stop-chevron {
+/* Foco visible en el interior de la columna: la tarjeta recorta
+   (`overflow: hidden`), así que un contorno exterior se perdería. */
+.stop-col:focus-visible,
+.stop-col-opts .mini-btn:focus-visible {
+  outline: 3px solid var(--brand-500);
+  outline-offset: -3px;
+}
+
+/* 1 · Número de parada */
+.stop-col-num {
   display: grid;
   place-items: center;
-  flex: none;
+  padding: 10px 4px;
+  background: var(--surface-2);
+}
+
+/* El número es una etiqueta, no una línea: sin color de línea. Se
+   sobrescribe aquí el tamaño del `.stop-code` general. */
+.stop-col-num .stop-code {
+  min-width: 0;
+  height: auto;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+/* 2 · Nombre. Sin recorte de ninguna clase: "C/ Licenciado Vidriera, s/n
+   (Frente residencia)" y "…(Junto Residencia)" solo se distinguen por el
+   final, y son aceras distintas. Si no cabe, envuelve. */
+.stop-col-name {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.stop-col-name:active {
+  background: var(--surface-2);
+}
+
+.stop-name {
+  max-width: 100%;
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.25;
+  /* Parte una palabra solo si no cabe ni sola en su renglón: con
+     `anywhere` salían "Licenciad/o" y "Madroños/, s/n". */
+  overflow-wrap: break-word;
+}
+
+/* El nombre oficial de una parada renombrada, en una 2.ª fila. */
+.stop-name-official {
+  max-width: 100%;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.25;
   color: var(--text-3);
-  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease;
+  overflow-wrap: break-word;
 }
 
-.stop-chevron svg {
-  width: 18px;
-  height: 18px;
-}
-
-.stop-card.is-expanded .stop-chevron {
-  transform: rotate(90deg);
-  color: var(--brand-500);
-}
-
-/* Franja: número, líneas y botones de administrar, en la misma banda. */
-.stop-meta {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 0 12px 10px 14px;
-}
-
-/* Alto pegado al contenido: una fila casi siempre, dos en las pocas
-   paradas con muchas líneas. Nunca recorta; lo que no cabe en los
-   huecos de `STOP_LINES_SLOTS` se cuenta con un "+N". */
+/* 3 · Líneas. Hasta seis huecos; el "+N" cuenta como uno. */
 .stop-lines {
   display: flex;
   flex-wrap: wrap;
+  align-content: center;
   align-items: center;
-  gap: 5px;
-  min-width: 0;
-  min-height: 30px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  color: inherit;
-  cursor: pointer;
+  justify-content: center;
+  gap: 4px 5px;
+  padding: 10px 6px;
+  background: var(--surface-2);
 }
 
-/* El número de parada, al tamaño de los distintivos y sin color de
-   línea: es una etiqueta, no una línea. El hueco extra lo separa de
-   ellas sin necesidad de un signo. */
-.stop-lines .stop-code {
-  min-width: 0;
-  height: 22px;
-  padding: 0 6px;
-  margin-right: 4px;
-  border-radius: 7px;
-  font-size: 11.5px;
-  box-shadow: inset 0 0 0 1px var(--border);
+.stop-lines .line-chip.is-sm {
+  min-width: 24px;
+  height: 20px;
+  padding: 0 4px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 
 .stop-lines-empty {
+  flex-basis: 100%;
   font-size: 12.5px;
+  text-align: center;
   color: var(--text-3);
+}
+
+/* Pantallas de menos de 360 px: al nombre le quedaban unos 60 px y
+   palabras como "Licenciado" o "Residencia)" no cabían ni solas en su
+   renglón. Se le dan los píxeles que sobran en el número, en las líneas
+   y en los márgenes, y si aun así una palabra no cabe, se parte con
+   guion (`lang="es"`; donde el navegador lo sepa hacer) en vez de por
+   cualquier letra. */
+@media (max-width: 359px) {
+  .stop-cols {
+    grid-template-columns: 44px minmax(0, 1fr) 60px 88px;
+  }
+
+  /* Dos distintivos por fila siguen cabiendo, más juntos: 2 × 23 + 4,
+     más el divisor y el relleno, son 59 px. */
+  .stop-lines {
+    gap: 4px;
+    padding: 10px 4px;
+  }
+
+  .stop-lines .line-chip.is-sm {
+    min-width: 23px;
+    padding: 0 3px;
+  }
+
+  .stop-col-num {
+    padding: 10px 3px;
+  }
+
+  .stop-col-num .stop-code {
+    padding: 4px 5px;
+  }
+
+  .stop-col-name {
+    padding: 10px 5px 10px 8px;
+  }
+
+  .stop-name,
+  .stop-name-official {
+    hyphens: auto;
+  }
 }
 
 /* El "+N" no es una línea: ni lleva color de línea ni debe parecerlo. */
@@ -3179,19 +3251,64 @@ button.card-head {
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
-.stop-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
+/* 4 · Opciones: rejilla 2×2, sin marcos propios (los pone la rejilla). */
+.stop-col-opts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: repeat(2, minmax(44px, 1fr));
+  padding: 0;
+  cursor: auto;
 }
 
-/* Más pequeños que los de las demás tarjetas: aquí hay cinco o seis
-   tarjetas en pantalla y administrar una parada no es lo que se viene a
-   hacer, sino lo que se hace de vez en cuando. */
-.stop-tools .mini-btn {
-  width: 30px;
-  height: 30px;
+.stop-col-opts .mini-btn {
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.stop-col-opts .mini-btn:nth-child(n + 3) {
+  border-top: 1px solid var(--border);
+}
+
+.stop-col-opts .mini-btn:nth-child(even) {
+  border-left: 1px solid var(--border);
+}
+
+.stop-col-opts .mini-btn:hover:not(:disabled),
+.stop-col-opts .mini-btn:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.stop-col-opts .mini-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* El primero (Avisos) lleva el color de marca. */
+.stop-col-opts .mini-btn:first-child {
+  color: var(--brand-500);
+}
+
+.stop-col-opts .mini-btn.is-danger {
+  color: var(--danger);
+}
+
+/* Parada sin guardar: tres botones. La cuarta celda lleva los mismos
+   divisores que un botón, o la rejilla se veía a medio dibujar. */
+.stop-col-opts.is-three::after {
+  content: "";
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.stop-col-opts .mini-btn.is-danger:hover:not(:disabled),
+.stop-col-opts .mini-btn.is-danger:active:not(:disabled) {
+  background: var(--danger-soft);
 }
 
 /* El despliegue -----------------------------------------------------
@@ -3244,7 +3361,8 @@ button.card-head {
   animation: none !important;
 }
 
-/* Estado de la parada y su botón de actualizar, en la misma línea. */
+/* Estado de la fuente de la parada (el botón de actualizar está en las
+   opciones de la tarjeta). */
 .stop-status {
   display: flex;
   align-items: center;
@@ -3252,60 +3370,16 @@ button.card-head {
   gap: 10px;
 }
 
-/* Aire entre la raya y lo primero del cuerpo: sin él, el nombre oficial
-   (o el estado, si no lo hay) quedaba pegado a la raya. */
+/* Aire entre la raya y lo primero del cuerpo (el estado de la fuente):
+   sin él quedaba pegado a la raya. */
 .stop-card .card-body {
   padding-top: 14px;
-}
-
-/* El nombre oficial de una parada renombrada. Vive aquí dentro porque
-   sirve para comprobar cuál es, y eso se comprueba al abrirla. Va en su
-   propia placa, con la chincheta y la etiqueta encima, para que se lea
-   como un dato de la parada y no como una línea suelta de letra pequeña. */
-.stop-official {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.stop-official > svg {
-  width: 18px;
-  height: 18px;
-  color: var(--text-3);
-}
-
-.stop-official p {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.stop-official-label {
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-
-.stop-official-name {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--text-2);
-  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .stop-body,
   .stop-body-inner,
-  .stop-chevron {
+  .stop-card {
     transition: none;
   }
 }
@@ -3607,19 +3681,21 @@ button.card-head {
 }
 
 /* Guardar es la acción de esta tarjeta cuando la parada no es favorita:
-   con el color de marca, para que se vea que es lo que se puede hacer. */
-.stop-tools .mini-btn.is-save {
-  color: var(--brand-600);
+   con el color de marca, como Avisos, para que se vea que se puede hacer. */
+.stop-col-opts .mini-btn.is-save {
+  color: var(--brand-500);
 }
 
-/* Próximos autobuses con la tarjeta plegada: una sola fila, sin
+/* Próximos autobuses con la tarjeta plegada: una franja bajo las
+   columnas, a todo el ancho, con su propio divisor. Una sola fila, sin
    recortar ni saltar de línea porque como mucho son tres. */
 .nearest-next {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 14px;
-  padding: 0 14px 11px;
+  padding: 8px 14px 9px;
+  border-top: 1px solid var(--border);
 }
 
 .nearest-next-item {

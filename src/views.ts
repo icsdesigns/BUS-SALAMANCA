@@ -1516,21 +1516,14 @@ function renderStopDialog(): string {
  * Una parada guardada, o la más cercana a ti (`nearest`), que es la misma
  * tarjeta con otro botón: guardarla en vez de renombrarla o quitarla.
  *
- * Plegada tiene que enseñar TODAS las líneas que pasan por ella —son lo que
- * identifica la parada de un vistazo— y todas las tarjetas plegadas tienen que
- * medir lo mismo, o la lista se lee como si estuviera rota. Las dos cosas a la
- * vez no caben en el hueco que dejaba la cabecera: entre el código, el nombre y
- * los tres botones quedaban unos 90 px, y trece distintivos ahí solo podían
- * salir cortados o con barra de desplazamiento.
+ * Plegada es una fila de cuatro columnas separadas por divisores: número de
+ * parada, nombre (con el oficial debajo si la has renombrado), líneas y
+ * opciones. Sin tiempos hasta desplegar. Las tres primeras columnas despliegan
+ * la parada; solo la del nombre es el botón accesible (las otras dos quedan
+ * fuera del tabulador y del lector de pantalla para no repetir destino).
  *
- * Por eso los distintivos bajan a una FRANJA PROPIA de ancho completo, con
- * hueco fijo para dos filas: entran con sitio de sobra los trece de la parada
- * más concurrida de la red, y una parada de una sola línea ocupa exactamente lo
- * mismo que una de trece.
- *
- * El botón de actualizar solo aparece desplegada: plegada no se enseña ni un
- * tiempo, así que refrescar era pedirle a la fuente —que limita por IP— un dato
- * que nadie iba a ver.
+ * Las opciones están siempre a la vista: Avisos, Actualizar y, según esté
+ * guardada o no, Cambiar nombre y Quitar, o Guardar parada.
  */
 function renderStopCard(stopId: string, nearest?: NearbyStop): string {
   const feed = feedOf(stopId)
@@ -1539,41 +1532,36 @@ function renderStopCard(stopId: string, nearest?: NearbyStop): string {
   const label = favouriteLabel(stopId, stopName(stopId))
   const lines = state.network?.getLinesForStop(stopId) ?? []
   const syncing = state.stopSync[stopId] !== undefined
-  // El nombre oficial solo aporta algo si la parada se ha renombrado, y como
-  // solo hace falta para comprobar CUÁL es, va dentro: en la cabecera obligaba a
-  // reservarle sitio en las cinco tarjetas para usarlo en una.
+  // El nombre oficial solo aporta algo si la parada se ha renombrado.
   const official = label === stopName(stopId) ? '' : stopName(stopId)
+  const stop = esc(stopId)
 
   return `
-    <section class="card stop-card${expanded ? ' is-expanded' : ''}${nearest ? ' is-nearest' : ''}" data-key="stop-${esc(stopId)}">
-      <button
-        class="stop-open"
-        type="button"
-        data-action="expand-stop"
-        data-stop="${esc(stopId)}"
-        aria-expanded="${expanded}"
-      >
-        <span class="stop-name">${esc(label)}</span>
-        <span class="sr-only">, parada ${esc(stopId)}</span>
-        <span class="stop-chevron">${icon('chevron')}</span>
-      </button>
-
-      <div class="stop-meta">
+    <section class="card stop-card${expanded ? ' is-expanded' : ''}${nearest ? ' is-nearest' : ''}" data-key="stop-${stop}">
+      <div class="stop-cols">
+        <button class="stop-col stop-col-num" type="button" data-action="expand-stop" data-stop="${stop}" tabindex="-1" aria-hidden="true"><span class="stop-code">${stop}</span></button>
+        <button
+          class="stop-open stop-col stop-col-name"
+          type="button"
+          data-action="expand-stop"
+          data-stop="${stop}"
+          aria-expanded="${expanded}"
+        >
+          <span class="stop-name">${esc(label)}</span>
+          ${official ? `<span class="stop-name-official">${esc(official)}</span>` : ''}
+          <span class="sr-only">, parada ${stop}</span>
+        </button>
         ${renderStopLines(stopId, lines)}
-        <span class="stop-tools">
+        <div class="stop-col stop-col-opts${saved ? '' : ' is-three'}">
+          <button class="mini-btn" type="button" data-action="stop-actions" data-stop="${stop}" aria-label="Avisos y seguimiento">${icon('bell')}</button>
+          <button class="mini-btn${syncing ? ' is-spinning' : ''}" type="button" data-action="refresh-stop" data-stop="${stop}" aria-label="Actualizar esta parada">${icon('refresh')}</button>
           ${
             saved
-              ? `<button class="mini-btn" type="button" data-action="rename-stop" data-stop="${esc(
-                  stopId,
-                )}" aria-label="Cambiar nombre">${icon('pencil')}</button>
-                <button class="mini-btn is-danger" type="button" data-action="remove-favourite" data-stop="${esc(
-                  stopId,
-                )}" aria-label="Quitar parada">${icon('trash')}</button>`
-              : `<button class="mini-btn is-save" type="button" data-action="toggle-favourite" data-stop="${esc(
-                  stopId,
-                )}" aria-label="Guardar parada">${icon('star')}</button>`
+              ? `<button class="mini-btn" type="button" data-action="rename-stop" data-stop="${stop}" aria-label="Cambiar nombre">${icon('pencil')}</button>
+          <button class="mini-btn is-danger" type="button" data-action="remove-favourite" data-stop="${stop}" aria-label="Quitar parada">${icon('trash')}</button>`
+              : `<button class="mini-btn is-save" type="button" data-action="toggle-favourite" data-stop="${stop}" aria-label="Guardar parada">${icon('star')}</button>`
           }
-        </span>
+        </div>
       </div>
       ${nearest && !expanded ? renderNearestNext(stopId) : ''}
 
@@ -1598,30 +1586,11 @@ function renderStopCard(stopId: string, nearest?: NearbyStop): string {
         <div class="stop-body-inner">
           <div class="card-divider"></div>
           <div class="card-body">
-            ${
-              official
-                ? `<div class="stop-official">
-                    ${icon('pin')}
-                    <p>
-                      <span class="stop-official-label">Nombre oficial</span>
-                      <span class="stop-official-name">${esc(official)}</span>
-                    </p>
-                  </div>`
-                : ''
-            }
-
             <div class="stop-status">
               ${feedPill(feed)}
-              <button class="mini-btn${syncing ? ' is-spinning' : ''}" type="button" data-action="refresh-stop" data-stop="${esc(
-                stopId,
-              )}" aria-label="Actualizar esta parada">${icon('refresh')}</button>
             </div>
 
             ${renderArrivals(stopId, feed)}
-
-            <button class="btn btn-secondary btn-block" type="button" data-action="stop-actions" data-stop="${esc(stopId)}">
-              ${icon('bell')} Avisos y seguimiento
-            </button>
           </div>
         </div>
       </div>
@@ -1630,54 +1599,35 @@ function renderStopCard(stopId: string, nearest?: NearbyStop): string {
 }
 
 /**
- * Huecos de distintivo que caben en la franja de líneas.
+ * Huecos de distintivo de la columna de líneas.
  *
- * Son HUECOS, no distintivos: el "+N" ocupa uno igual que una línea, y contarlo
- * aparte era el fallo. Con doce líneas y un "+1" se pedían trece huecos, y en
- * una pantalla de 320 px solo caben doce: el decimotercero se iba a una tercera
- * fila que la franja —de alto fijo— recortaba en silencio. Justo lo que este
- * número existe para impedir.
+ * Son HUECOS, no distintivos: el "+N" ocupa uno igual que una línea. Con más de
+ * seis líneas se enseñan cinco y el sexto hueco es el "+N" (N = total - 5); con
+ * seis o menos se ven todas.
  *
- * Doce son, como mucho, dos filas y media a 320 px, la pantalla más estrecha
- * que se contempla. La parada con más
- * líneas de toda la red tiene trece y solo tres pasan de nueve, así que el "+N"
- * aparece en una sola parada de las 349.
- *
- * Y existe igualmente por dos motivos. Uno, que la red se regenera desde la web
- * oficial (`npm run data:network`) y una parada nueva con veinte líneas no puede
- * romper la maquetación. Y dos, que un recorte silencioso —un `overflow: hidden`
+ * El "+N" existe porque la red se regenera desde la web oficial
+ * (`npm run data:network`) y una parada nueva con veinte líneas no puede romper
+ * la maquetación, y porque un recorte silencioso —un `overflow: hidden`
  * comiéndose líneas— es peor que un número: quien lo lee da por hecho que ha
- * visto todas las líneas de su parada.
+ * visto todas las líneas de su parada. Lo que resume va en su `title`.
  */
-const STOP_LINES_SLOTS = 12
+const STOP_LINES_SLOTS = 6
 
 /**
- * La franja de líneas de una parada.
+ * La columna de líneas de una parada (el número de parada va en su columna).
  *
- * Empieza por el número de parada y sigue con los distintivos. Crece con el
- * contenido —una fila casi siempre, dos en las pocas paradas con muchas líneas—
- * y NO recorta: lo que pasara de `STOP_LINES_SLOTS` se cuenta con un "+N" que
- * lleva en su `title` las líneas que resume.
- *
- * Es un botón, y no un bloque, porque ocupa el ancho entero justo debajo del
- * nombre: tocar ahí y que no pase nada se lee como un fallo. Despliega la
- * parada, igual que la cabecera, y se queda fuera del recorrido del tabulador
- * (`tabindex="-1"`) para no obligar a pasar dos veces por el mismo destino.
+ * Es un botón, y no un bloque, porque tocar ahí y que no pase nada se lee como
+ * un fallo: despliega la parada, igual que el nombre, y se queda fuera del
+ * recorrido del tabulador (`tabindex="-1"`) para no pasar dos veces por el mismo
+ * destino.
  */
 function renderStopLines(stopId: string, lines: TransitLine[]): string {
-  // El número de parada abre la franja: es un dato de consulta, no un título,
-  // y aquí le deja al nombre el ancho entero de la cabecera.
-  const code = `<span class="stop-code">${esc(stopId)}</span>`
+  const open = `<button class="stop-col stop-col-lines stop-lines" type="button" data-action="expand-stop" data-stop="${esc(
+    stopId,
+  )}" tabindex="-1" aria-hidden="true">`
 
   if (lines.length === 0) {
-    return `
-      <button class="stop-lines" type="button" data-action="expand-stop" data-stop="${esc(
-        stopId,
-      )}" tabindex="-1" aria-hidden="true">
-        ${code}
-        <span class="stop-lines-empty">Sin líneas registradas</span>
-      </button>
-    `
+    return `${open}<span class="stop-lines-empty">Sin líneas registradas</span></button>`
   }
 
   // Si sobra una sola línea, el "+1" ocuparía el hueco de esa línea y no se
@@ -1687,11 +1637,7 @@ function renderStopLines(stopId: string, lines: TransitLine[]): string {
   const visible = fits ? lines : lines.slice(0, STOP_LINES_SLOTS - 1)
   const hidden = fits ? [] : lines.slice(STOP_LINES_SLOTS - 1)
 
-  return `
-    <button class="stop-lines" type="button" data-action="expand-stop" data-stop="${esc(
-      stopId,
-    )}" tabindex="-1" aria-hidden="true">
-      ${code}
+  return `${open}
       ${visible.map((line) => lineChip(line.lineId, line.color, 'sm')).join('')}
       ${
         hidden.length > 0
@@ -1917,7 +1863,7 @@ function renderSeguimiento(): string {
         ${emptyState(
           'bell',
           'Sin avisos',
-          'Abre una parada guardada y elige “Avisos y seguimiento”: verás los minutos que faltan y por dónde viene el autobús.',
+          'Toca la campana de una parada guardada (Avisos y seguimiento): verás los minutos que faltan y por dónde viene el autobús.',
           '<button class="btn btn-primary" type="button" data-action="tab" data-tab="inicio">Ir a mis paradas</button>',
         )}
       </div></section>
