@@ -65,6 +65,8 @@ import {
   persistSettings,
   persistTab,
   persistTrackings,
+  PUNCTUALITY_ENABLED,
+  ROUTE_PLANNER_ENABLED,
   readInstallAttempt,
   writeInstallAttempt,
   emptyMapsState,
@@ -3163,13 +3165,20 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
     }
 
     case 'stop-actions':
+      // Con la puntualidad deshabilitada la campana ya no abre un menú de dos
+      // opciones: solo queda una, así que va directa a elegir línea y autobús
+      // para "Avisarme del próximo bus".
+      if (!PUNCTUALITY_ENABLED) {
+        openPickLine(stopId, 'tracking')
+        return
+      }
       state.sheet = { kind: 'stop-actions', stopId }
       render()
       return
 
     case 'pick-line': {
       const purpose = element.dataset.purpose as 'tracking' | 'monitor' | undefined
-      if (!purpose) {
+      if (!purpose || (purpose === 'monitor' && !PUNCTUALITY_ENABLED)) {
         return
       }
 
@@ -3179,6 +3188,9 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
 
     case 'confirm-sheet': {
       const purpose = element.dataset.purpose as 'tracking' | 'monitor' | undefined
+      if (purpose === 'monitor' && !PUNCTUALITY_ENABLED) {
+        return
+      }
       await confirmSheet(stopId, purpose)
       return
     }
@@ -3215,6 +3227,10 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       return
 
     case 'toggle-maps': {
+      // "Cómo llegar" deshabilitado: su interruptor ya no se dibuja.
+      if (!ROUTE_PLANNER_ENABLED) {
+        return
+      }
       const enabled = !state.settings.experimentalMaps
       state.settings.experimentalMaps = enabled
       persistSettings()
@@ -3244,7 +3260,7 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
 
     case 'info-section': {
       const section = element.dataset.section as InfoSection | undefined
-      if (!section || section === state.info.section) {
+      if (!section || section === state.info.section || (section === 'llegar' && !ROUTE_PLANNER_ENABLED)) {
         return
       }
 
@@ -3476,7 +3492,9 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
  * las dos limpiezas que dependen de ello: los recorridos se paran al salir de
  * "Seguir", y el buscador vuelve a "Seleccionar" al entrar en "Buscar".
  */
-async function goToTab(tab: TabId): Promise<void> {
+async function goToTab(requested: TabId): Promise<void> {
+  // Puntualidad está deshabilitada: cualquier enlace que quede a ella lleva a Inicio.
+  const tab: TabId = requested === 'monitor' && !PUNCTUALITY_ENABLED ? 'inicio' : requested
   const previous = state.tab
 
   // Al salir de Seguir el aviso NO se pausa: es justo la función que tiene

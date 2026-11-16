@@ -1168,9 +1168,29 @@ async function main() {
       viewsSource.includes("{ id: 'info', label: 'Info', iconName: 'info' }")
         && /function visibleTabs\(\): TabDefinition\[\] \{\s*\n\s*return TABS/.test(viewsSource))
     check('una pestana Mapas guardada aterriza en Info',
-      /const valid: TabId\[\] = \['inicio', 'buscar', 'monitor', 'seguimiento', 'info', 'ajustes'\]/
-        .test(stateSource)
+      /\['inicio', 'buscar', 'seguimiento', 'trafico', 'info', 'ajustes'\]/.test(stateSource)
         && stateSource.includes("raw === 'mapas' ? 'info'"))
+
+    // Puntualidad y "Como llegar" estan deshabilitadas: sin pestana, sin menu y
+    // sin trabajo de fondo. La barra queda en Inicio, Buscar, Seguir, Trafico e Info.
+    check('Puntualidad y Como llegar vienen deshabilitadas',
+      /export const PUNCTUALITY_ENABLED: boolean = false/.test(stateSource)
+        && /export const ROUTE_PLANNER_ENABLED: boolean = false/.test(stateSource))
+    check('la barra es Inicio, Buscar, Seguir, Trafico e Info',
+      /\{ id: 'seguimiento', label: 'Seguir'[^\n]*\n\s*\{ id: 'monitor'[^\n]*\n\s*\{ id: 'trafico', label: 'Tráfico'[^\n]*\n\s*\{ id: 'info', label: 'Info'/
+        .test(viewsSource)
+        && viewsSource.includes("TABS.filter((tab) => tab.id !== 'monitor' || PUNCTUALITY_ENABLED)"))
+    check('con la puntualidad apagada no se carga ni se manda ningun control',
+      /monitors: PUNCTUALITY_ENABLED\s*\?/.test(stateSource))
+    check('la campana abre directamente "Avisarme del proximo bus"',
+      /case 'stop-actions':[\s\S]{0,400}if \(!PUNCTUALITY_ENABLED\) \{\s*openPickLine\(stopId, 'tracking'\)/
+        .test(mainSource))
+    check('Trafico lleva el informe de cortes e Info solo los horarios',
+      /function renderTrafico\(\)[\s\S]{0,400}renderTrafficCutsSection\(\)/.test(viewsSource)
+        && /if \(!ROUTE_PLANNER_ENABLED\) \{\s*return `\$\{header\}\$\{renderLineInfo\(\)\}`/.test(viewsSource))
+    check('"Ver detalle" de los cortes lleva a la pestana Trafico',
+      (await fs.readFile(path.join(projectRoot, 'src', 'traffic-view.ts'), 'utf8'))
+        .includes('data-tab="trafico">Ver detalle'))
     check('al salir de la pestana se suelta el mapa y la ubicacion',
       mainSource.includes('function closeMaps()')
         && mainSource.includes("if (previous === 'info' && tab !== 'info')")

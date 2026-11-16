@@ -32,6 +32,8 @@ import {
   MAX_TRACKING_JOBS,
   MAX_TRACKING_SKIP,
   parseClockToMinutes,
+  PUNCTUALITY_ENABLED,
+  ROUTE_PLANNER_ENABLED,
   state,
   TRACKING_INTERVAL_SECONDS,
   type MonitorTrace,
@@ -258,12 +260,17 @@ interface TabDefinition {
  * Barra inferior. "Mis paradas" ya no es una pestaña propia —vive dentro de
  * Inicio— y Ajustes se abre desde el icono de la barra superior, junto al de
  * actualizar: son dos destinos menos que elegir cada vez que se mira abajo.
+ *
+ * Inicio, Buscar, Seguir, Tráfico (el informe de cortes del Ayuntamiento) e
+ * Info (los horarios de cada línea). "Puntualidad" solo aparece si su función
+ * vuelve a encenderse (`PUNCTUALITY_ENABLED`).
  */
 const TABS: TabDefinition[] = [
   { id: 'inicio', label: 'Inicio', iconName: 'home' },
   { id: 'buscar', label: 'Buscar', iconName: 'search' },
   { id: 'seguimiento', label: 'Seguir', iconName: 'route' },
   { id: 'monitor', label: 'Puntualidad', iconName: 'chart' },
+  { id: 'trafico', label: 'Tráfico', iconName: 'warn' },
   { id: 'info', label: 'Info', iconName: 'info' },
 ]
 
@@ -278,7 +285,7 @@ const TABS: TabDefinition[] = [
  * mirar un horario no tiene por qué enterarse de que existe un experimento.
  */
 function visibleTabs(): TabDefinition[] {
-  return TABS
+  return TABS.filter((tab) => tab.id !== 'monitor' || PUNCTUALITY_ENABLED)
 }
 
 /** Ajustes no esta en la barra, pero su pantalla tambien necesita titulo. */
@@ -287,6 +294,7 @@ const TAB_TITLES: Record<TabId, string> = {
   buscar: 'Buscar',
   seguimiento: 'Seguir',
   monitor: 'Puntualidad',
+  trafico: 'Tráfico',
   info: 'Info',
   ajustes: 'Ajustes',
 }
@@ -385,7 +393,10 @@ function renderScreen(): string {
     case 'seguimiento':
       return renderSeguimiento()
     case 'monitor':
-      return renderMonitor()
+      // Deshabilitada: una pestaña guardada de antes cae en Inicio.
+      return PUNCTUALITY_ENABLED ? renderMonitor() : renderInicio()
+    case 'trafico':
+      return renderTrafico()
     case 'info':
       return renderInfo()
     case 'ajustes':
@@ -542,7 +553,7 @@ function renderInicio(): string {
       <div class="hero-stats">
         <div class="hero-stat"><strong>${favourites.length}</strong><span>Paradas</span></div>
         <div class="hero-stat"><strong>${state.trackings.length}</strong><span>Seguimientos</span></div>
-        <div class="hero-stat"><strong>${state.monitors.length}</strong><span>Monitorizaciones</span></div>
+        ${PUNCTUALITY_ENABLED ? `<div class="hero-stat"><strong>${state.monitors.length}</strong><span>Monitorizaciones</span></div>` : ''}
       </div>
     </section>
 
@@ -2269,14 +2280,14 @@ const TOUR: TourStep[] = [
     body: 'El aviso de próximo bus: te dice los minutos que faltan, por cuántas paradas viene y te llega aunque cierres la app.',
   },
   {
-    iconName: 'chart',
-    title: 'Puntualidad',
-    body: 'Elige una parada, una línea y una franja: la app anota a qué hora pasa de verdad y la compara con el horario.',
+    iconName: 'warn',
+    title: 'Tráfico',
+    body: 'Los cortes de tráfico del Ayuntamiento, en curso y de los próximos días, con las líneas de autobús a las que afectan.',
   },
   {
     iconName: 'info',
     title: 'Info',
-    body: 'Los horarios oficiales de cada línea, por sentido y por día, con la primera salida, la última y los descansos señalados. Y, si lo enciendes en Ajustes, el cálculo de rutas entre dos puntos.',
+    body: 'Los horarios oficiales de cada línea, por sentido y por día, con la primera salida, la última y los descansos señalados.',
   },
   {
     iconName: 'settings',
@@ -2381,17 +2392,61 @@ function renderTour(): string {
  * esperando el autobús ahora mismo".
  */
 function renderInfo(): string {
+  const header = renderTabHeader(
+    'clock',
+    'Horarios de las líneas',
+    'Salidas oficiales de cada línea, por sentido y por tipo de día.',
+  )
+
+  // Sin "Cómo llegar" no hay apartados que elegir: Info son los horarios.
+  if (!ROUTE_PLANNER_ENABLED) {
+    return `${header}${renderLineInfo()}`
+  }
+
   const section = state.info.section
 
   return `
+    ${header}
     <div class="segmented" role="tablist" aria-label="Apartados de información">
       ${renderInfoSegment('llegar', 'Cómo llegar', 'route')}
       ${renderInfoSegment('lineas', 'Información de líneas', 'clock')}
     </div>
 
-    ${renderTrafficCutsSection()}
-
     ${section === 'llegar' ? renderComoLlegar() : renderLineInfo()}
+  `
+}
+
+/**
+ * Encabezado de pestaña: icono, título y una línea que dice qué hay debajo.
+ *
+ * Lo llevan las pestañas de consulta (Tráfico e Info), que no tienen el reloj
+ * de Inicio ni un buscador arriba: sin él, la pantalla empezaba directamente
+ * por una lista y no quedaba claro de qué era.
+ */
+function renderTabHeader(iconName: string, title: string, subtitle: string): string {
+  return `
+    <header class="tab-header">
+      <span class="tab-header-icon">${icon(iconName)}</span>
+      <div class="tab-header-copy">
+        <h2 class="tab-header-title">${esc(title)}</h2>
+        <p class="tab-header-sub">${esc(subtitle)}</p>
+      </div>
+    </header>
+  `
+}
+
+/**
+ * La pestaña Tráfico: el informe de cortes de tráfico del Ayuntamiento, en
+ * curso y de los próximos días, con las líneas a las que afecta cada uno.
+ */
+function renderTrafico(): string {
+  return `
+    ${renderTabHeader(
+      'warn',
+      'Cortes de tráfico',
+      'Calles cortadas hoy y en los próximos días, y las líneas a las que afectan.',
+    )}
+    ${renderTrafficCutsSection()}
   `
 }
 
@@ -2640,7 +2695,7 @@ function renderDirectionSchedule(line: TransitLine, direction: LineDirection): s
         <p class="text-tiny">
           Son las salidas de cabecera del horario oficial, no tiempos en vivo: por una parada
           intermedia el autobús pasa más tarde, y el retraso real no está aquí. Para eso están los
-          tiempos de Inicio y Buscar, y la pestaña Puntualidad.
+          tiempos de Inicio y Buscar.
         </p>
       </div>
     </section>
@@ -3107,7 +3162,7 @@ function renderSettingsActions(): string {
 
     ${renderTrackingRulesCard()}
 
-    ${renderExperimentalCard()}
+    ${ROUTE_PLANNER_ENABLED ? renderExperimentalCard() : ''}
 
     ${renderUpdateCard()}
   `
@@ -3295,13 +3350,15 @@ function renderRefreshRulesCard(): string {
       seconds(FRESHNESS.routeBackground),
       `Fuera de la pestaña solo se busca el "a N paradas" del aviso: con el autobús a menos de ${ROUTE_SCAN_MAX_MINUTES} min, hasta donde puede estar, y parando en la primera parada que lo tenga encima.`,
     ],
-    [
-      'Puntualidad',
-      seconds(FRESHNESS.monitor),
-      `Solo dentro de la franja del control. Con un autobús ya entrando se aprieta a ${seconds(
-        FRESHNESS.focused,
-      )}; fuera de la franja no se consulta nada.`,
-    ],
+    ...(PUNCTUALITY_ENABLED
+      ? [[
+        'Puntualidad',
+        seconds(FRESHNESS.monitor),
+        `Solo dentro de la franja del control. Con un autobús ya entrando se aprieta a ${seconds(
+          FRESHNESS.focused,
+        )}; fuera de la franja no se consulta nada.`,
+      ] as [string, string, string]]
+      : []),
   ]
 
   return `
@@ -3333,7 +3390,7 @@ function renderRefreshRulesCard(): string {
           <dt>Revisión del plan</dt><dd>cada segundo</dd>
           <dt>Lote automático</dt><dd>como mucho uno cada ${Math.round(AUTO_CYCLE_MS / 1000)} s</dd>
           <dt>“Al día” en pantalla</dt><dd>dato de hace menos de 40 s</dd>
-          <dt>App en segundo plano</dt><dd>solo siguen el aviso activo y la puntualidad en franja</dd>
+          <dt>App en segundo plano</dt><dd>${PUNCTUALITY_ENABLED ? 'solo siguen el aviso activo y la puntualidad en franja' : 'solo sigue el aviso activo'}</dd>
         </dl>
 
         <p class="text-tiny">
@@ -3384,7 +3441,7 @@ function renderTrackingRulesCard(): string {
           <dt>Al crear otro</dt><dd>sustituye al que hubiera</dd>
           <dt>Botón saltar</dt><dd>pasa a seguir al siguiente autobús de la línea</dd>
           <dt>Fuera de la pestaña Seguir</dt><dd>sigue avisando, sin dibujar el recorrido</dd>
-          <dt>Midiendo puntualidad</dt><dd>sigue avisando, sin rastrear por dónde viene</dd>
+          ${PUNCTUALITY_ENABLED ? '<dt>Midiendo puntualidad</dt><dd>sigue avisando, sin rastrear por dónde viene</dd>' : ''}
         </dl>
 
         <p class="text-tiny">
@@ -3537,7 +3594,7 @@ function renderStopActionsSheet(stopId: string): string {
           }</span>
         </span>
       </button>
-      <button class="sheet-option" type="button" data-action="pick-line" data-stop="${esc(
+      ${PUNCTUALITY_ENABLED ? `<button class="sheet-option" type="button" data-action="pick-line" data-stop="${esc(
         stopId,
       )}" data-purpose="monitor">
         ${icon('chart')}
@@ -3545,7 +3602,7 @@ function renderStopActionsSheet(stopId: string): string {
           <strong>Medir puntualidad</strong>
           <span>Anota a qué hora pasa realmente en una franja horaria.</span>
         </span>
-      </button>
+      </button>` : ''}
     </div>
   `
 }

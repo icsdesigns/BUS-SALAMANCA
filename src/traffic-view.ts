@@ -262,28 +262,27 @@ function renderAlertPanel(alerts: DatedCut[], today: Date): string {
       ${body}
       ${source}
       <div class="traffic-alert-foot">
-        <button class="btn btn-secondary btn-sm" type="button" data-action="tab" data-tab="info">Ver detalle</button>
+        <button class="btn btn-secondary btn-sm" type="button" data-action="tab" data-tab="trafico">Ver detalle</button>
       </div>
     </section>
   `
 }
 
-/** Sección para la pestaña Info: cortes en curso y de los próximos días. */
+/**
+ * Contenido de la pestaña Tráfico: cortes en curso y de los próximos días.
+ *
+ * El título lo pone el encabezado de la pestaña (`renderTabHeader` en views),
+ * así que aquí ya no se repite.
+ */
 export function renderTrafficCutsSection(): string {
-  const head = `
-    <div class="section-head">
-      <h2>Cortes de tráfico</h2>
-    </div>
-  `
 
   // Nunca ha habido datos: navegador (la fuente no se puede leer) o sin conexión.
   if (fetchedAt === null) {
     if (phase === 'idle' || phase === 'loading') {
-      return `${head}<p class="text-tiny">Consultando los cortes de tráfico del Ayuntamiento…</p>`
+      return `<p class="text-tiny">Consultando los cortes de tráfico del Ayuntamiento…</p>`
     }
 
     return `
-      ${head}
       <section class="card"><div class="card-body">
         ${emptyState(
           'warn',
@@ -337,7 +336,6 @@ export function renderTrafficCutsSection(): string {
     : ''
 
   return `
-    ${head}
     ${updated}
     ${soonGroup}
     ${

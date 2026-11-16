@@ -245,10 +245,9 @@ async function main() {
       { tab: 'inicio', name: 'inicio' },
       { tab: 'buscar', name: 'buscar' },
       { tab: 'seguimiento', name: 'seguimiento' },
-      { tab: 'monitor', name: 'puntualidad' },
-      // La pestana Info existe siempre; su apartado "Como llegar" es lo unico
-      // que depende del interruptor experimental. Se entra por "Informacion de
-      // lineas", que es el apartado que no pide la ubicacion.
+      // Puntualidad y "Como llegar" estan deshabilitadas: la barra es Inicio,
+      // Buscar, Seguir, Trafico e Info (horarios de linea).
+      { tab: 'trafico', name: 'trafico' },
       { tab: 'info', name: 'info-lineas', section: 'lineas' },
       { tab: 'ajustes', name: 'ajustes' },
     ]

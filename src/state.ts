@@ -20,8 +20,27 @@ export const APP_VERSION_CODE = __APP_VERSION_CODE__
  * segundo no es experimental —sale del GTFS que ya viaja dentro de la app— así
  * que la pestaña existe siempre; lo que sigue dependiendo del interruptor de
  * Ajustes es el apartado "Cómo llegar".
+ *
+ * 'trafico' recoge el informe de cortes de tráfico que antes iba dentro de Info.
+ * 'monitor' (Puntualidad) sigue en el tipo pero está deshabilitada: ver
+ * `PUNCTUALITY_ENABLED`.
  */
-export type TabId = 'inicio' | 'buscar' | 'monitor' | 'seguimiento' | 'info' | 'ajustes'
+export type TabId = 'inicio' | 'buscar' | 'monitor' | 'seguimiento' | 'trafico' | 'info' | 'ajustes'
+
+/**
+ * Funciones apagadas.
+ *
+ * "Puntualidad" (los controles que medían a qué hora pasa de verdad un autobús)
+ * y "Cómo llegar" (el planificador de rutas) están deshabilitadas: no tienen
+ * pestaña, no aparecen en ningún menú y no trabajan por detrás. El código se
+ * conserva inerte detrás de estos interruptores, y los datos que hubiera
+ * guardados tampoco se borran: volver a encenderlas es cambiar un `false`.
+ *
+ * Van tipadas como `boolean`, no como el literal `false`, para que TypeScript no
+ * dé por muertas las ramas que dependen de ellas.
+ */
+export const PUNCTUALITY_ENABLED: boolean = false
+export const ROUTE_PLANNER_ENABLED: boolean = false
 
 /** Los dos apartados de la pestaña Info. */
 export type InfoSection = 'llegar' | 'lineas'
@@ -581,7 +600,8 @@ export interface InfoState {
 }
 
 export function emptyInfoState(): InfoState {
-  return { section: 'llegar', lineId: '', directionKey: '' }
+  // Sin "Cómo llegar", Info es solo la información de líneas.
+  return { section: ROUTE_PLANNER_ENABLED ? 'llegar' : 'lineas', lineId: '', directionKey: '' }
 }
 
 export function emptyMapsState(): MapsState {
@@ -773,9 +793,14 @@ export const state: AppState = {
   // busesSeen no existia en versiones anteriores: un aviso guardado sin el empieza a contar de cero.
   trackings: readTrackings(),
   trackingStopsAway: {},
-  monitors: readJson<MonitorJob[]>(KEYS.monitors, [])
-    .filter((item) => typeof item?.id === 'string')
-    .map((item) => ({ ...item, directionKey: item.directionKey ?? null })),
+  // Con la puntualidad apagada no se carga ningún control: así ni la web ni el
+  // servicio nativo (que recibe la lista vacía) miden nada. Lo guardado en disco
+  // se queda donde estaba, porque nada vuelve a escribir esa clave.
+  monitors: PUNCTUALITY_ENABLED
+    ? readJson<MonitorJob[]>(KEYS.monitors, [])
+      .filter((item) => typeof item?.id === 'string')
+      .map((item) => ({ ...item, directionKey: item.directionKey ?? null }))
+    : [],
   monitorPasses: readPasses(),
   monitorRuntime: readJson<Record<string, MonitorRuntime>>(KEYS.monitorRuntime, {}),
   monitorDayView: {},
@@ -1179,7 +1204,11 @@ function readTab(): TabId {
   // "info" SI esta en la lista, al contrario que la antigua "mapas": ya no es
   // una pestana experimental que pueda no existir, porque los horarios de linea
   // salen del GTFS que viaja dentro de la app y estan siempre disponibles.
-  const valid: TabId[] = ['inicio', 'buscar', 'monitor', 'seguimiento', 'info', 'ajustes']
+  // "monitor" (Puntualidad) solo es válida con la función encendida: quien la
+  // tuviera abierta al cerrar la app aterriza en Inicio.
+  const valid: TabId[] = PUNCTUALITY_ENABLED
+    ? ['inicio', 'buscar', 'monitor', 'seguimiento', 'trafico', 'info', 'ajustes']
+    : ['inicio', 'buscar', 'seguimiento', 'trafico', 'info', 'ajustes']
   try {
     // "paradas" existio hasta la v4.4 como pestaña propia; ahora vive dentro de
     // Inicio, asi que quien la tuviera guardada aterriza justo donde estaba.
@@ -1198,5 +1227,10 @@ function readSettings(): AppSettings {
   const settings = { ...DEFAULT_SETTINGS, ...stored }
   // Guardado por una version anterior (o a mano): se acota antes de usarlo.
   settings.trackingBusTarget = clampBusTarget(settings.trackingBusTarget)
+  // "Cómo llegar" deshabilitado: aunque se encendiera en una versión anterior,
+  // aquí no puede quedar encendido (ni pedir ubicación, ni cargar el callejero).
+  if (!ROUTE_PLANNER_ENABLED) {
+    settings.experimentalMaps = false
+  }
   return settings
 }

@@ -404,6 +404,54 @@ p {
   flex: none;
 }
 
+/* Encabezado de pestaña (Tráfico, Info): icono, título y una línea de qué hay. */
+.tab-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+}
+
+.tab-header-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-md);
+  background: var(--info-soft);
+  color: var(--brand-500);
+}
+
+.tab-header-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.tab-header-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tab-header-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.tab-header-sub {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.35;
+}
+
 .screen-intro {
   display: flex;
   flex-direction: column;
@@ -1478,7 +1526,10 @@ button.card-head {
 
 .hero-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Tantas columnas iguales como casillas haya: con la puntualidad apagada son
+     dos (Paradas y Seguimientos), con ella encendida vuelven a ser tres. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
