@@ -3611,8 +3611,8 @@ function renderUpdateCard(): string {
           la versión nueva, y el último paso lo confirmas tú en el diálogo del sistema.
         </p>
         <p class="text-tiny">
-          Cada versión nueva se ofrece seis horas después de publicarse: antes de eso la app
-          sigue diciendo que está al día y no descarga nada.
+          La app avisa sola de una versión nueva seis horas después de publicarse. Con
+          «Buscar actualización» la ves al momento.
         </p>
       </div>
     </section>
