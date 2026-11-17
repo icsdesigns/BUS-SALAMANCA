@@ -43,7 +43,7 @@ export const IG_GUIDES: IgGuide[] = [
     label: 'Inicio',
     iconName: 'home',
     summary:
-      'Tus paradas guardadas, con el reloj y los cortes de tráfico. Toca una para ver cuándo llega cada línea; la campana abre «Avisarme del próximo bus».',
+      'Tus paradas guardadas, con el reloj y los cortes de tráfico. Toca una para ver cuándo llega cada línea. Sus cuatro botones: la campana abre «Avisarme del próximo bus», las flechas actualizan los tiempos, el lápiz cambia el nombre y la papelera quita la parada.',
     steps: ['Toca una parada: ves cuándo llega cada línea', 'La campana abre «Avisarme del próximo bus»', 'Elige la línea y te avisa'],
   },
   {
@@ -91,7 +91,7 @@ export function isIgTab(value: string | undefined | null): value is IgTab {
 /** Descripción para lectores de pantalla: lo que se ve, de principio a fin. */
 const ARIA: Record<IgTab, string> = {
   inicio:
-    'Animación de la pestaña Inicio: un dedo toca una parada guardada, se despliegan sus próximas llegadas por línea y, al tocar la campana, se abre «Avisarme del próximo bus» para elegir la línea.',
+    'Animación de la pestaña Inicio: un dedo toca una parada guardada, se despliegan sus próximas llegadas por línea y, al tocar la campana (junto a actualizar, cambiar nombre y quitar), se abre «Avisarme del próximo bus» para elegir la línea.',
   buscar:
     'Animación de la pestaña Buscar: se escribe «Gran Vía» en el buscador, aparecen las paradas que coinciden, se toca una, se abre su ficha con los tiempos y se guarda en Inicio.',
   seguimiento:
@@ -159,6 +159,18 @@ function tabbar(lit: IgTab, to?: IgTab): string {
   `
 }
 
+/** Las cuatro opciones de una parada guardada, en rejilla 2×2 como en la app. */
+function stopOpts(): string {
+  return `
+    <span class="ig-opts" aria-hidden="true">
+      <span class="ig-opt ig-bell">${icon('bell')}</span>
+      <span class="ig-opt">${icon('refresh')}</span>
+      <span class="ig-opt">${icon('pencil')}</span>
+      <span class="ig-opt is-danger">${icon('trash')}</span>
+    </span>
+  `
+}
+
 function finger(): string {
   return `
     <span class="ig-finger">
@@ -192,7 +204,7 @@ function inicioBody(): string {
       <span class="ig-code">222</span>
       <span class="ig-stop-name">C/ Gran Vía, 38</span>
       <span class="ig-chips">${chip('4')}${chip('1')}</span>
-      <span class="ig-bell">${icon('bell')}</span>
+      ${stopOpts()}
     </div>
 
     <div class="ig-arrivals ig-in-panel">
@@ -204,7 +216,7 @@ function inicioBody(): string {
       <span class="ig-code">301</span>
       <span class="ig-stop-name">Casa<small>C/ Gran Vía, 45</small></span>
       <span class="ig-chips">${chip('4')}${chip('8')}</span>
-      <span class="ig-bell">${icon('bell')}</span>
+      ${stopOpts()}
     </div>
   `
 }
@@ -261,7 +273,7 @@ function ghostInicio(): string {
         <span class="ig-code">222</span>
         <span class="ig-stop-name">C/ Gran Vía, 38</span>
         <span class="ig-chips">${chip('4')}${chip('1')}</span>
-        <span class="ig-bell">${icon('bell')}</span>
+        ${stopOpts()}
       </div>
     </div>
   `
