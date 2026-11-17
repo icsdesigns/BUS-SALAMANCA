@@ -315,12 +315,33 @@
   color: var(--text-3);
 }
 
-.ig-bell {
+/* Opciones de la parada: rejilla 2×2 (Avisos, Actualizar, Nombre, Quitar). */
+.ig-opts {
   flex: none;
-  width: 1.35em;
-  height: 1.35em;
-  color: var(--ig-accent);
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: repeat(2, 1.4em);
+  grid-template-rows: repeat(2, 1fr);
+  margin-right: -0.6em;
+  border-left: 1px solid var(--border);
 }
+
+.ig-opt {
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+.ig-opt:nth-child(odd) { border-right: 1px solid var(--border); }
+.ig-opt:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+
+.ig-opt svg {
+  width: 0.8em;
+  height: 0.8em;
+}
+
+.ig-opt.ig-bell { color: var(--ig-accent); }
+.ig-opt.is-danger { color: var(--danger, #dc2626); }
 
 .ig-arr {
   display: flex;
@@ -588,7 +609,7 @@
 .ig--inicio {
   --x0: 16em; --y0: 17em;
   --x1: 12.5em; --y1: 8.3em;
-  --x2: 27.5em; --y2: 8.3em;
+  --x2: 26.6em; --y2: 7.55em;
   --x3: 2.2em; --y3: 15.5em;
 }
 

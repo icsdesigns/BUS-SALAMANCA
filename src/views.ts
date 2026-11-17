@@ -20,6 +20,13 @@ import {
   SCHEDULE_ESTIMATE_ERROR_MINUTES,
 } from './services/schedule'
 import {
+  describeScheduleOrigin,
+  formatAge as formatFeedAge,
+  MIN_DAYS_LEFT,
+  REFRESH_EVERY_MS,
+  scheduleOriginWarning,
+} from './services/gtfs-feed'
+import {
   APP_VERSION,
   AUTO_CYCLE_MS,
   FRESHNESS,
@@ -1990,7 +1997,7 @@ function renderMonitor(): string {
       <p>Media de paso real observada frente al horario programado.</p>
     </div>
     ${renderMonitorCostNotice()}
-    ${state.schedule?.stale ? notice('warn', scheduleStaleMessage()) : ''}
+    ${state.schedule?.stale ? renderScheduleOrigin() : ''}
     ${state.monitors.map((monitor) => renderMonitorCard(monitor)).join('')}
   `
 }
@@ -2025,11 +2032,32 @@ function renderMonitorCostNotice(): string {
   )
 }
 
-function scheduleStaleMessage(): string {
-  const validTo = state.schedule?.validTo
-  return validTo
-    ? `El horario oficial incluido caduca el ${validTo}. Las horas programadas son orientativas hasta actualizar el GTFS.`
-    : 'El horario oficial incluido no declara fechas de validez; las horas programadas son orientativas.'
+/**
+ * De donde sale el horario y para que fechas vale: «Horario oficial del 15 al
+ * 30 de noviembre · actualizado hace 2 h». Si no cubre hoy, en ambar y con el
+ * aviso de que las horas son orientativas.
+ */
+function renderScheduleOrigin(): string {
+  const origin = state.scheduleOrigin
+  const now = new Date()
+
+  if (!origin) {
+    // Horario sin fechas declaradas: no hay rango que enseñar.
+    return state.schedule?.stale
+      ? `<div class="schedule-origin is-warn" role="status">${icon('warn')}<div class="schedule-origin-copy"><strong>Horario sin fechas de validez</strong><span>Las horas programadas son orientativas.</span></div></div>`
+      : ''
+  }
+
+  const warning = scheduleOriginWarning(origin, now)
+  return `
+    <div class="schedule-origin${warning ? ' is-warn' : ''}" role="status">
+      ${icon(warning ? 'warn' : 'clock')}
+      <div class="schedule-origin-copy">
+        <strong>${esc(describeScheduleOrigin(origin, now))}</strong>
+        ${warning ? `<span>${esc(warning)}</span>` : ''}
+      </div>
+    </div>
+  `
 }
 
 function renderMonitorCard(monitor: MonitorJob): string {
@@ -2618,7 +2646,7 @@ function renderLineInfo(): string {
       </div>
     </section>
 
-    ${state.schedule.stale ? notice('warn', scheduleStaleMessage()) : ''}
+    ${renderScheduleOrigin()}
 
     ${
       line && direction
@@ -3415,16 +3443,12 @@ function renderSettingsFacts(): string {
           <dt>Llegadas en tiempo real</dt><dd>Web oficial</dd>
           <dt>Líneas y recorridos</dt><dd>${network?.lineCount ?? 0} líneas · ${network?.directionCount ?? 0} sentidos</dd>
           <dt>Red descargada</dt><dd>${esc(network ? new Date(network.generatedAt).toLocaleDateString('es-ES') : '—')}</dd>
-          <dt>Horario programado</dt><dd>${esc(
-            state.schedule?.validFrom && state.schedule?.validTo
-              ? `${state.schedule.validFrom} → ${state.schedule.validTo}`
-              : 'no disponible',
-          )}</dd>
         </dl>
         ${state.scheduleError ? notice('warn', state.scheduleError) : ''}
-        ${state.schedule?.stale ? notice('warn', scheduleStaleMessage()) : ''}
       </div>
     </section>
+
+    ${renderScheduleFeedCard()}
 
     <section class="set-sub">
       <h3 class="set-sub-title">Consultas a la fuente</h3>
@@ -3452,6 +3476,59 @@ function renderSettingsFacts(): string {
 
     ${renderRefreshRulesCard()}
 
+  `
+}
+
+/**
+ * Horario programado: de donde sale, que fechas cubre y el boton para buscar
+ * uno nuevo a mano (la busqueda automatica no dice nada si falla).
+ */
+function renderScheduleFeedCard(): string {
+  const origin = state.scheduleOrigin
+  const check = state.scheduleCheck
+  const now = new Date()
+
+  return `
+    <section class="set-sub">
+      <h3 class="set-sub-title">Horario programado</h3>
+      <p class="set-sub-lead">Se descarga solo el oficial vigente cada pocos días</p>
+      <div class="set-sub-body">
+        ${state.schedule ? renderScheduleOrigin() : ''}
+        <dl class="kv">
+          <dt>Origen</dt><dd>${
+            !origin
+              ? 'no disponible'
+              : origin.kind === 'downloaded'
+                ? 'Oficial descargado'
+                : 'Incluido en la app (reserva)'
+          }</dd>
+          ${
+            origin?.kind === 'downloaded' && origin.downloadedAt !== null
+              ? `<dt>Descargado</dt><dd>${esc(formatFeedAge(origin.downloadedAt, now))}</dd>`
+              : ''
+          }
+          ${
+            origin?.lastModified
+              ? `<dt>Publicado</dt><dd>${esc(new Date(origin.lastModified).toLocaleDateString('es-ES'))}</dd>`
+              : ''
+          }
+        </dl>
+        ${check.message ? notice(check.message.tone, check.message.text) : ''}
+        <div class="btn-row">
+          <button class="btn btn-secondary" type="button" data-action="check-schedule-feed" ${
+            check.checking ? 'disabled' : ''
+          }>
+            ${icon('refresh')} ${check.checking ? 'Buscando…' : 'Buscar horario nuevo'}
+          </button>
+        </div>
+        <p class="text-tiny">
+          Es el GTFS oficial de Salamanca de Transportes, replicado a diario por Mobility Database.
+          Cada versión cubre unas dos semanas. La app busca una nueva al abrirse si la
+          guardada caduca en menos de ${MIN_DAYS_LEFT} días o tiene más de ${Math.round(REFRESH_EVERY_MS / 86_400_000)} días;
+          sin conexión sigue con la que tenga y, en último caso, con la incluida en la app.
+        </p>
+      </div>
+    </section>
   `
 }
 

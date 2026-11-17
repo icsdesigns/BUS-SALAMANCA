@@ -85,6 +85,7 @@ async function main() {
     'streets.ts',
     'bus-position.ts',
     'traffic-cuts.ts',
+    'gtfs-feed.ts',
   ])
 
   const { parseStopFeed } = await import(pathToUrl(path.join(build, 'arrival-parser.js')))
@@ -462,6 +463,144 @@ async function main() {
     const lateEstimates = estimateArrivalsFromSchedule(schedule, '222', ['4'], beforeLast)
     check('el ultimo paso del dia sale diez minutos antes', lateEstimates.some((item) => item.minutesUntil === 10),
       `ultimo ${lastWeekday}: ${lateEstimates.map((item) => item.estimatedClock).join(', ')}`)
+
+    section('6 ter · Horario oficial descargado (GTFS vigente)')
+
+    const feedApi = await import(pathToUrl(path.join(build, 'gtfs-feed.js')))
+    const scheduleApi = await import(pathToUrl(path.join(build, 'schedule.js')))
+    const { default: JSZip } = await import('jszip')
+
+    check('el incluido cubre del 16 al 31 de marzo', schedule.validFrom === '2026-03-16' && schedule.validTo === '2026-03-31',
+      `${schedule.validFrom} → ${schedule.validTo}`)
+    check('el incluido trae pasos por parada', schedule.passCount > 100_000, String(schedule.passCount))
+
+    // Rango de fechas: calendar.txt y calendar_dates.txt juntos.
+    const range = scheduleApi.serviceDateRange(
+      [
+        { service_id: 'L', monday: '1', tuesday: '1', wednesday: '1', thursday: '1', friday: '1', saturday: '0', sunday: '0', start_date: '20261115', end_date: '20261130' },
+        { service_id: 'X', monday: '0', tuesday: '0', wednesday: '0', thursday: '0', friday: '0', saturday: '0', sunday: '0', start_date: '20260101', end_date: '20271231' },
+      ],
+      [
+        { service_id: 'F', date: '20261208', exception_type: '1' },
+        { service_id: 'L', date: '20261101', exception_type: '2' },
+      ],
+    )
+    check('rango: une calendar y calendar_dates, ignora quitas y servicios sin días',
+      range?.from === '20261115' && range?.to === '20261208', JSON.stringify(range))
+    check('rango: sin calendario no hay rango', scheduleApi.serviceDateRange([], []) === null)
+    check('rango: solo calendar_dates (como el incluido)',
+      JSON.stringify(scheduleApi.serviceDateRange([], [
+        { service_id: 'a', date: '20260316', exception_type: '1' },
+        { service_id: 'b', date: '20260331', exception_type: '1' },
+      ])) === JSON.stringify({ from: '20260316', to: '20260331' }))
+
+    const dayTypes = scheduleApi.serviceDayTypes(
+      [{ service_id: 'T', monday: '1', tuesday: '1', wednesday: '1', thursday: '1', friday: '1', saturday: '1', sunday: '0', start_date: '20261115', end_date: '20261130' }],
+      [{ service_id: 'D', date: '20261122', exception_type: '1' }],
+    )
+    check('tipos de día: un servicio de lunes a sábado vale para laborable y sábado',
+      dayTypes.get('T')?.has('weekday') && dayTypes.get('T')?.has('saturday') && !dayTypes.get('T')?.has('sunday'))
+    check('tipos de día: el 22-11-2026 es domingo', dayTypes.get('D')?.has('sunday') === true)
+
+    // Un feed con calendar.txt (como puede venir el descargado) separa los tipos de día.
+    {
+      const zip = new JSZip()
+      zip.file('routes.txt', 'route_id,route_short_name,route_long_name\nR1,4,A > B\n')
+      zip.file('trips.txt', 'route_id,service_id,trip_id\nR1,LAB,t1\nR1,DOM,t2\n')
+      zip.file('stop_times.txt', 'trip_id,arrival_time,departure_time,stop_id,stop_sequence\nt1,07:00:00,07:00:00,222,0\nt2,09:30:00,09:30:00,222,0\n')
+      zip.file('calendar.txt', 'service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nLAB,1,1,1,1,1,0,0,20261115,20261130\nDOM,0,0,0,0,0,0,1,20261115,20261130\n')
+      const tiny = await scheduleApi.loadSchedule(null, await zip.generateAsync({ type: 'uint8array' }))
+      check('calendar.txt: horario laborable y de domingo por separado',
+        tiny.getScheduledTimes('222', '4', 'weekday').join() === '07:00'
+          && tiny.getScheduledTimes('222', '4', 'sunday').join() === '09:30'
+          && tiny.getScheduledTimes('222', '4', 'saturday').length === 0)
+      check('calendar.txt: fechas de validez', tiny.validFrom === '2026-11-15' && tiny.validTo === '2026-11-30')
+    }
+
+    // El horario se puede cargar desde los bytes del zip, no solo desde la URL.
+    const bundledBytes = await fs.readFile(path.join(projectRoot, 'public', 'data', 'gtfs.zip'))
+    const fromBytes = await scheduleApi.loadSchedule(net, new Uint8Array(bundledBytes))
+    check('cargar desde bytes da el mismo horario que desde la URL',
+      fromBytes.passCount === schedule.passCount
+        && fromBytes.getScheduledTimes('222', '4', 'weekday').join() === times.join())
+
+    // Validación contra la red.
+    const bundledZip = await JSZip.loadAsync(bundledBytes)
+    const validBundled = await feedApi.inspectFeedZip(bundledZip, net)
+    check('validación: el incluido encaja con la red', validBundled.ok,
+      `${validBundled.reason} paradas ${validBundled.stopMatch} líneas ${validBundled.lineMatch}`)
+    check('validación: su rango sale de calendar_dates',
+      validBundled.range?.validFrom === '2026-03-16' && validBundled.range?.validTo === '2026-03-31')
+
+    const fullFiles = ['routes.txt', 'trips.txt', 'stop_times.txt', 'stops.txt', 'calendar.txt']
+    const okRange = { validFrom: '2026-11-15', validTo: '2026-11-30' }
+    check('validación: faltan ficheros',
+      !feedApi.validateFeed({ files: ['routes.txt', 'stops.txt'], stopIds: [], lineIds: [], range: okRange }, ['1'], ['1']).ok)
+    check('validación: sin calendario no vale',
+      !feedApi.validateFeed({ files: ['routes.txt', 'trips.txt', 'stop_times.txt', 'stops.txt'], stopIds: ['1'], lineIds: ['1'], range: okRange }, ['1'], ['1']).ok)
+    check('validación: sin fechas no vale',
+      !feedApi.validateFeed({ files: fullFiles, stopIds: ['1'], lineIds: ['1'], range: null }, ['1'], ['1']).ok)
+    check('validación: un feed de otra red se rechaza',
+      !feedApi.validateFeed({ files: fullFiles, stopIds: ['900', '901', '1'], lineIds: ['A', 'B'], range: okRange },
+        ['1', '2', '3', '4'], ['1', '2']).ok)
+    check('validación: con el 75 % de paradas y líneas vale',
+      feedApi.validateFeed({ files: fullFiles.map((name) => `gtfs/${name}`), stopIds: ['1', '2', '3', '99'], lineIds: ['1', '2', '3'], range: okRange },
+        ['1', '2', '3', '4'], ['1', '2', '3', '4']).ok)
+
+    // Cuándo descargar.
+    const at = (iso) => new Date(`${iso}T10:00:00`)
+    const day = 86_400_000
+    const now = at('2026-11-17')
+    const meta = (validFrom, validTo, ageMs) => ({ validFrom, validTo, downloadedAt: now.getTime() - ageMs })
+    check('descarga: sin feed guardado toca', feedApi.downloadDue(null, null, now).reason === 'no-feed')
+    check('descarga: si no cubre hoy toca', feedApi.downloadDue(meta('2026-11-01', '2026-11-14', day), null, now).reason === 'not-today')
+    check('descarga: con menos de 5 días por delante toca',
+      feedApi.downloadDue(meta('2026-11-15', '2026-11-20', 3_600_000), null, now).reason === 'few-days-left')
+    check('descarga: más de 3 días desde la última toca',
+      feedApi.downloadDue(meta('2026-11-15', '2026-11-30', 3 * day + 1), null, now).reason === 'old')
+    check('descarga: reciente y con margen no toca',
+      feedApi.downloadDue(meta('2026-11-15', '2026-11-30', 2 * day), null, now).due === false)
+    check('descarga: tras un fallo se espera aunque no haya feed',
+      feedApi.downloadDue(null, now.getTime() - 60 * 60_000, now).reason === 'waiting-retry')
+    check('descarga: pasada la espera tras el fallo vuelve a tocar',
+      feedApi.downloadDue(null, now.getTime() - feedApi.RETRY_AFTER_FAILURE_MS - 1, now).due === true)
+    check('descarga: una fecha de descarga en el futuro cuenta como antigua',
+      feedApi.downloadDue(meta('2026-11-15', '2026-11-30', -2 * day), null, now).reason === 'old')
+
+    // Cuál usar.
+    const bundledRange = { validFrom: '2026-03-16', validTo: '2026-03-31' }
+    const nov = { validFrom: '2026-11-15', validTo: '2026-11-30' }
+    const oct = { validFrom: '2026-10-01', validTo: '2026-10-15' }
+    check('elección: el descargado si cubre hoy', feedApi.pickFeed(nov, bundledRange, '2026-11-17').use === 'downloaded')
+    check('elección: el incluido si es el único que cubre hoy',
+      feedApi.pickFeed(oct, bundledRange, '2026-03-20').use === 'bundled'
+        && feedApi.pickFeed(oct, bundledRange, '2026-03-20').stale === false)
+    check('elección: ninguno cubre hoy → el más reciente, caducado',
+      feedApi.pickFeed(oct, bundledRange, '2026-11-17').use === 'downloaded'
+        && feedApi.pickFeed(oct, bundledRange, '2026-11-17').stale === true)
+    check('elección: sin descargado, el incluido caducado',
+      JSON.stringify(feedApi.pickFeed(null, bundledRange, '2026-11-17')) === JSON.stringify({ use: 'bundled', stale: true }))
+    check('elección: sin ninguno, nada', feedApi.pickFeed(null, null, '2026-11-17').use === null)
+
+    // Cuándo adoptar uno nuevo.
+    check('adopción: cubre hoy', feedApi.isMoreUseful(nov, oct, '2026-11-17'))
+    check('adopción: no cubre hoy pero termina más tarde', feedApi.isMoreUseful(oct, bundledRange, '2026-11-17'))
+    check('adopción: no cubre hoy y es más viejo → se descarta', !feedApi.isMoreUseful(oct, nov, '2026-12-05'))
+
+    // Textos.
+    const today = new Date(2026, 10, 17, 12, 0)
+    check('texto: rango en el mismo mes', feedApi.formatFeedRange(nov, today) === 'del 15 al 30 de noviembre',
+      feedApi.formatFeedRange(nov, today))
+    check('texto: rango entre meses',
+      feedApi.formatFeedRange({ validFrom: '2026-11-28', validTo: '2026-12-12' }, today) === 'del 28 de noviembre al 12 de diciembre')
+    check('texto: origen descargado',
+      feedApi.describeScheduleOrigin({ kind: 'downloaded', ...nov, downloadedAt: today.getTime() - 2 * 3_600_000, lastModified: null }, today)
+        === 'Horario oficial del 15 al 30 de noviembre · actualizado hace 2 h')
+    check('texto: el incluido caducado avisa',
+      /^Caducó el 31 de marzo/.test(feedApi.scheduleOriginWarning({ kind: 'bundled', ...bundledRange, downloadedAt: null, lastModified: null }, today) ?? ''))
+    check('texto: en vigor no avisa',
+      feedApi.scheduleOriginWarning({ kind: 'downloaded', ...nov, downloadedAt: null, lastModified: null }, today) === null)
+    check('la URL del feed es una constante https', /^https:\/\//.test(feedApi.GTFS_FEED_URL))
   } finally {
     await server.close()
   }

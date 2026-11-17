@@ -1,3 +1,4 @@
+import type { ScheduleOrigin } from './services/gtfs-feed'
 import type { Network } from './services/network'
 import { averageMinutes } from './services/punctuality'
 import type { MonitorRuntime } from './services/punctuality'
@@ -372,6 +373,13 @@ export interface AppState {
   network: Network | null
   schedule: ScheduleDataset | null
   scheduleError: string | null
+  /** De donde sale el horario en uso (descargado o incluido) y sus fechas. */
+  scheduleOrigin: ScheduleOrigin | null
+  /** Busqueda de horario nuevo: en curso, y lo que dijo la ultima pedida a mano. */
+  scheduleCheck: {
+    checking: boolean
+    message: { tone: 'info' | 'warn' | 'error', text: string } | null
+  }
 
   tab: TabId
   toast: { message: string, tone: 'info' | 'error' | 'success' } | null
@@ -789,6 +797,8 @@ export const state: AppState = {
   network: null,
   schedule: null,
   scheduleError: null,
+  scheduleOrigin: null,
+  scheduleCheck: { checking: false, message: null },
 
   tab: readTab(),
   toast: null,

@@ -4347,3 +4347,43 @@ button.tour-backdrop {
   line-height: 1.35;
   color: var(--text-2);
 }
+
+/* Origen y fechas del horario programado (Info, Puntualidad y Ajustes). */
+.schedule-origin {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.schedule-origin.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.schedule-origin svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 1px;
+}
+
+.schedule-origin-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.schedule-origin strong {
+  font-weight: 600;
+}
+
+.set-sub-body .schedule-origin {
+  margin-bottom: 10px;
+}
