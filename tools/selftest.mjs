@@ -686,7 +686,10 @@ async function main() {
 
   section('7 · Canal de actualización')
 
-  const { parseTag, readRelease, isNewer, isReleaseMature, shouldOffer, RELEASE_GRACE_MS } = await import(
+  const {
+    parseTag, readRelease, isNewer, isReleaseMature, shouldOffer, RELEASE_GRACE_MS,
+    pendingSince, isUpdateMandatory, MANDATORY_AFTER_MS,
+  } = await import(
     pathToUrl(path.join(build, 'release-parser.js'))
   )
   const { resolveVersion, VERSION_CODE_BASE, versionFromSubject, commitVersionName } = await import(
@@ -792,6 +795,36 @@ async function main() {
   check('sin fecha de publicacion no se retiene para siempre',
     isReleaseMature({ publishedAt: null }, 0) === true
       && isReleaseMature({ publishedAt: 'no-es-fecha' }, 0) === true)
+
+  // Actualizacion obligatoria a los diez dias de la primera version pendiente.
+  {
+    const DAY = 24 * HOUR
+    const list = [
+      { tag_name: 'v7.2-b1050', published_at: '2026-11-20T10:00:00Z' },
+      { tag_name: 'v7.1-b1047', published_at: '2026-11-10T10:00:00Z' },
+      { tag_name: 'v7.1-b1048', published_at: '2026-11-01T10:00:00Z', draft: true },
+      { tag_name: 'v7.0-b1046', published_at: '2026-11-01T10:00:00Z' },
+      { tag_name: 'raro', published_at: '2026-10-01T10:00:00Z' },
+    ]
+    const since = pendingSince(list, 1046)
+    check('el plazo cuenta desde la primera version pendiente, no desde la ultima',
+      since === Date.parse('2026-11-10T10:00:00Z'))
+    check('borradores y etiquetas raras no cuentan; al dia no hay nada pendiente',
+      pendingSince(list, 1050) === null && pendingSince([list[2]], 1000) === null)
+    check('son diez dias exactos', MANDATORY_AFTER_MS === 10 * DAY)
+    check('a los nueve dias aun se puede posponer',
+      isUpdateMandatory(since, since + 9 * DAY) === false)
+    check('a los diez dias es obligatoria',
+      isUpdateMandatory(since, since + 10 * DAY) === true)
+    check('sin fecha, o con el reloj atrasado, nunca obliga',
+      isUpdateMandatory(null, Date.now()) === false && isUpdateMandatory(since, since - DAY) === false)
+    const viewsSrc = await fs.readFile(path.join(projectRoot, 'src', 'views.ts'), 'utf8')
+    const mainSrc = await fs.readFile(path.join(projectRoot, 'src', 'main.ts'), 'utf8')
+    check('obligatoria: sin X ni «Ahora no», y la accion de posponer no hace nada',
+      viewsSrc.includes('const closable = !busy && !mandatory')
+        && viewsSrc.includes("(update.dismissed && !mandatory)")
+        && /case 'dismiss-update':\s*\/\/[^\n]*\n\s*if \(state\.update\.mandatory\) \{\s*return/.test(mainSrc))
+  }
 
   const latestOnly = await fs.readFile(
     path.join(projectRoot, 'src', 'services', 'updates.ts'), 'utf8')

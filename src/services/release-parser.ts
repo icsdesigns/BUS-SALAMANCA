@@ -119,3 +119,56 @@ export function shouldOffer(
 ): boolean {
   return isNewer(release, installedVersionCode) && isReleaseMature(release, now)
 }
+
+/**
+ * Actualizacion obligatoria: cuando la instalada lleva DIEZ DIAS sin ponerse al
+ * dia, la ventana de actualizar deja de poder cerrarse.
+ *
+ * Los diez dias cuentan desde la primera release publicada que la instalada no
+ * tiene, no desde la ultima: si salen dos versiones seguidas, quien se quedo en
+ * la anterior a ambas no vuelve a empezar la cuenta con cada publicacion.
+ */
+export const MANDATORY_AFTER_MS = 10 * 24 * 60 * 60 * 1000
+
+/**
+ * Fecha de publicacion (ms) de la release mas antigua que la instalada aun no
+ * tiene, entre las de la lista. Ignora borradores, prereleases, etiquetas que no
+ * se entienden y fechas ilegibles. `null` si no hay ninguna pendiente con fecha.
+ */
+export function pendingSince(
+  releases: readonly GitHubRelease[],
+  installedVersionCode: number,
+): number | null {
+  let oldest: number | null = null
+
+  for (const release of releases) {
+    if (!release.tag_name || release.draft || release.prerelease || !release.published_at) {
+      continue
+    }
+    const parsed = parseTag(release.tag_name)
+    if (!parsed || parsed.versionCode <= installedVersionCode) {
+      continue
+    }
+    const published = Date.parse(release.published_at)
+    if (!Number.isFinite(published)) {
+      continue
+    }
+    if (oldest === null || published < oldest) {
+      oldest = published
+    }
+  }
+
+  return oldest
+}
+
+/**
+ * ¿Ha pasado el plazo? Una fecha en el futuro (reloj del movil atrasado) nunca
+ * obliga: ante la duda, no se bloquea la app.
+ */
+export function isUpdateMandatory(
+  since: number | null,
+  now: number = Date.now(),
+  limitMs: number = MANDATORY_AFTER_MS,
+): boolean {
+  return since !== null && now - since >= limitMs
+}

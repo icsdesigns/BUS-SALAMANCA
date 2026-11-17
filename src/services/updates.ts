@@ -1,8 +1,25 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
-import { isNewer, isReleaseMature, readRelease, type GitHubRelease, type ReleaseInfo } from './release-parser'
+import {
+  isNewer,
+  isReleaseMature,
+  isUpdateMandatory,
+  pendingSince,
+  readRelease,
+  type GitHubRelease,
+  type ReleaseInfo,
+} from './release-parser'
 
-export { isNewer, isReleaseMature, parseTag, readRelease, RELEASE_GRACE_MS } from './release-parser'
+export {
+  isNewer,
+  isReleaseMature,
+  isUpdateMandatory,
+  MANDATORY_AFTER_MS,
+  parseTag,
+  pendingSince,
+  readRelease,
+  RELEASE_GRACE_MS,
+} from './release-parser'
 export type { ReleaseInfo } from './release-parser'
 
 /**
@@ -22,6 +39,8 @@ export type { ReleaseInfo } from './release-parser'
 
 const REPO = 'SILAB3D/BUS-SALAMANCA'
 const RELEASES_URL = `https://api.github.com/repos/${REPO}/releases/latest`
+/** Las ultimas publicaciones, para saber desde cuando esta pendiente la instalada. */
+const RELEASE_LIST_URL = `https://api.github.com/repos/${REPO}/releases?per_page=30`
 
 /** Sin cobertura, la consulta se queda colgada y el arranque no debe esperarla. */
 const CHECK_TIMEOUT_MS = 12_000
@@ -52,7 +71,11 @@ export interface UpdaterPlugin {
 export const Updater = registerPlugin<UpdaterPlugin>('Updater')
 
 export type CheckOutcome =
-  | { status: 'update', release: ReleaseInfo }
+  /**
+   * `mandatory`: la instalada lleva diez dias o mas sin la primera version que
+   * le falta; la ventana de actualizar ya no se puede cerrar.
+   */
+  | { status: 'update', release: ReleaseInfo, mandatory: boolean }
   | { status: 'current', versionCode: number }
   | { status: 'unsupported' }
   | { status: 'error', message: string }
@@ -154,7 +177,11 @@ export async function checkForUpdate(): Promise<CheckOutcome> {
       return { status: 'current', versionCode: installed.versionCode }
     }
 
-    return { status: 'update', release }
+    return {
+      status: 'update',
+      release,
+      mandatory: await isMandatory(release, installed.versionCode, controller.signal),
+    }
   } catch (error) {
     const message =
       error instanceof DOMException && error.name === 'AbortError'
@@ -166,4 +193,38 @@ export async function checkForUpdate(): Promise<CheckOutcome> {
   } finally {
     window.clearTimeout(timer)
   }
+}
+
+/**
+ * ¿Obliga ya a actualizar? Mira la lista de publicaciones para contar desde la
+ * primera que le falta a la instalada (ver `pendingSince`). Si la lista no
+ * llega, cuenta desde la ultima publicada, que es lo minimo seguro: nunca
+ * adelanta la obligacion.
+ */
+async function isMandatory(
+  latest: ReleaseInfo,
+  installedVersionCode: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  let since: number | null = latest.publishedAt ? Date.parse(latest.publishedAt) : null
+  if (since !== null && !Number.isFinite(since)) {
+    since = null
+  }
+
+  try {
+    const response = await fetch(RELEASE_LIST_URL, {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal,
+    })
+    if (response.ok) {
+      const list = (await response.json()) as unknown
+      if (Array.isArray(list)) {
+        since = pendingSince(list as GitHubRelease[], installedVersionCode) ?? since
+      }
+    }
+  } catch {
+    // Sin la lista se queda la fecha de la ultima publicada.
+  }
+
+  return isUpdateMandatory(since)
 }
