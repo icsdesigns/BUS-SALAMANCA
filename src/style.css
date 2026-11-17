@@ -2714,27 +2714,22 @@ button.card-head {
   background: var(--brand-600);
 }
 
-/* Cada paso entra con un desliz corto; la infografía empieza su bucle desde
-   el principio porque el paso es un nodo nuevo (data-key distinto). */
-.tour-step {
+/* Ayuda de una pestaña (botón de información del banner): su infografía,
+   un título y dos frases, entrando con un desliz corto. */
+.help-step {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   width: 100%;
-  animation: tour-step-in 0.24s cubic-bezier(0.23, 1, 0.32, 1) both;
+  animation: help-step-in 0.24s cubic-bezier(0.23, 1, 0.32, 1) both;
 }
 
-.tour-step .ig {
+.help-step .ig {
   margin-bottom: 4px;
 }
 
-.tour-step .tour-perms {
-  width: 100%;
-  text-align: left;
-}
-
-@keyframes tour-step-in {
+@keyframes help-step-in {
   from {
     opacity: 0;
     transform: translateX(10px);
@@ -2745,17 +2740,17 @@ button.card-head {
   }
 }
 
+/* Un icono dentro de una frase, del tamaño del texto. */
+.inline-icon svg {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.2em;
+}
+
 button.tour-backdrop {
   border: 0;
   padding: 0;
   cursor: pointer;
-}
-
-/* Ayuda de pestaña: el "?" del encabezado de Tráfico e Info. */
-.tab-header-help {
-  margin-left: auto;
-  align-self: flex-start;
-  border-radius: var(--r-full);
 }
 
 /* ==================================================================
@@ -2963,71 +2958,11 @@ button.tour-backdrop {
   height: 16px;
 }
 
-/* Elegir la pestaña cuya animación se ve. Cinco botones iguales en una fila
-   que cabe en 320 px: icono encima, nombre debajo, como la barra inferior. */
-.set-help-tabs {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-  padding: 4px;
-  border-radius: var(--r-md);
-  background: var(--surface-3);
-}
-
-.set-help-tab {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  min-height: 48px;
-  padding: 6px 2px;
-  border: 0;
-  border-radius: 11px;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.set-help-tab svg {
-  width: 19px;
-  height: 19px;
-}
-
-.set-help-tab[aria-pressed="true"] {
-  background: var(--surface);
-  color: var(--brand-600);
-  box-shadow: var(--shadow-1);
-}
-
-.set-help-tab:focus-visible {
-  outline: 2px solid var(--brand-500);
-  outline-offset: 1px;
-}
-
-.set-help-view {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  animation: fade-in 0.2s ease-out both;
-}
-
-.set-help-copy {
-  font-size: 13.5px;
-  line-height: 1.45;
-  color: var(--text-2);
-  text-align: center;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .set-panel-body,
   .set-panel-content,
   .set-panel-chev,
-  .tour-step,
-  .set-help-view {
+  .help-step {
     transition: none !important;
     animation: none !important;
   }

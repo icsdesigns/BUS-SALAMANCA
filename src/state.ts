@@ -497,11 +497,8 @@ export interface AppState {
   /** Paneles de Ajustes desplegados. No se guarda: cada visita empieza plegada. */
   settingsOpen: SettingsPanel[]
 
-  /** Infografía que se está mirando en Ajustes > Ayuda. */
-  settingsHelpTab: IgTab
-
   /**
-   * Ayuda de una sola pestaña abierta (el botón "?" de Tráfico e Info), o
+   * Ayuda de una sola pestaña abierta (el botón de información del banner), o
    * `null`. Es la misma infografía del tour, sin el resto del recorrido.
    */
   help: IgTab | null
@@ -886,7 +883,6 @@ export const state: AppState = {
   info: emptyInfoState(),
 
   settingsOpen: [],
-  settingsHelpTab: 'inicio',
   help: null,
 
   // El tour se abre solo UNA vez por persona, no una vez por version: quien ya

@@ -839,10 +839,17 @@ async function main() {
       stateSrc.includes("tourSeen: 'salbus.tourSeen'")
         && stateSrc.includes('tour: { open: !readTourSeen(), step: 0 }')
         && !/tour: \{ open: [^}]*APP_VERSION/.test(stateSrc))
-    check('el tour tiene un paso por pestaña y no habla de Puntualidad ni de Cómo llegar',
-      ['inicio', 'buscar', 'seguimiento', 'trafico', 'info'].every((tab) => igSrc.includes(`tab: '${tab}'`))
-        && !/Puntualidad|Cómo llegar/.test(igSrc)
-        && viewsSrc.includes('export const TOUR_STEPS = TOUR_TABS.length + 1'))
+    {
+      const tourSrc = viewsSrc.slice(viewsSrc.indexOf('const TOUR: TourStep[]'), viewsSrc.indexOf('export const TOUR_STEPS'))
+      check('el tour es el de antes, sin animaciones: un paso por pestaña y nada de Puntualidad ni Cómo llegar',
+        ['Inicio', 'Buscar', 'Seguir', 'Tráfico', 'Info'].every((title) => tourSrc.includes(`title: '${title}'`))
+          && !/Puntualidad|Cómo llegar/.test(tourSrc)
+          && !/renderInfographic/.test(viewsSrc.slice(viewsSrc.indexOf('function renderTour('), viewsSrc.indexOf('function renderHelpDialog(')))
+          && viewsSrc.includes('export const TOUR_STEPS = TOUR.length'))
+      check('las infografías se abren desde el botón de información del banner, una por pestaña',
+        ['inicio', 'buscar', 'seguimiento', 'trafico', 'info'].every((tab) => igSrc.includes(`tab: '${tab}'`))
+          && /isIgTab\(state\.tab\)[\s\S]{0,200}data-action="help-open"/.test(viewsSrc))
+    }
     check('los paneles de Ajustes son botones con aria-expanded y región inerte al plegarse',
       viewsSrc.includes('aria-expanded="${open}"')
         && viewsSrc.includes('role="region"')
