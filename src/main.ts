@@ -26,7 +26,8 @@ import {
   type PlanOutcome,
 } from './services/routing'
 import { loadStreetGraph, peekStreetGraph, walkPath } from './services/streets'
-import { currentDayType, loadSchedule } from './services/schedule'
+import { currentDayType } from './services/schedule'
+import { checkForNewFeed, loadBestSchedule } from './services/gtfs-feed'
 import { onWidgetStopTap, syncWidgetStops, takeWidgetStop } from './services/widget'
 import {
   cancelNotification,
@@ -446,14 +447,18 @@ async function bootstrap(): Promise<void> {
     state.network = await loadNetwork()
     log('info', 'red', `${state.network.lineCount} líneas y ${state.network.directionCount} sentidos cargados.`)
 
-    // El horario programado solo alimenta la pantalla de puntualidad: si falla,
-    // la app sigue siendo plenamente utilizable.
+    // El horario programado alimenta Info, la puntualidad y los pasos estimados:
+    // si falla, la app sigue siendo plenamente utilizable. Aqui solo se lee lo
+    // que ya hay (descargado o incluido); la busqueda de uno nuevo va despues,
+    // en segundo plano, para no retrasar el arranque.
     state.bootPhase = 'Cargando el horario oficial…'
     render()
     try {
-      state.schedule = await loadSchedule(state.network)
+      const best = await loadBestSchedule(state.network)
+      state.schedule = best.schedule
+      state.scheduleOrigin = best.origin
       if (state.schedule.stale) {
-        log('warn', 'horario', `El GTFS incluido caducó el ${state.schedule.validTo ?? 'desconocido'}.`)
+        log('warn', 'horario', `El horario en uso caducó el ${state.schedule.validTo ?? 'desconocido'}.`)
       }
     } catch (error) {
       state.scheduleError = 'No se pudo cargar el horario programado; la puntualidad no estará disponible.'
@@ -484,6 +489,9 @@ async function bootstrap(): Promise<void> {
   // Cortes de tráfico del Ayuntamiento: caché primero, red después; cada cambio
   // repinta la pantalla.
   initTrafficCuts(render)
+
+  // Horario oficial vigente: se descarga solo si toca, sin esperar.
+  void refreshScheduleFeed()
 
   void setupPermissions()
   // Si la app se ha abierto pulsando una parada del widget, su hoja del aviso
@@ -537,6 +545,8 @@ async function bootstrap(): Promise<void> {
       void syncHomeLocation(true)
       // Los cortes de tráfico se descargan de nuevo solo si ya toca.
       refreshTrafficCuts()
+      // Y el horario oficial, igual: solo si el guardado caduca o es antiguo.
+      void refreshScheduleFeed()
       // Y se mira si hay versión nueva: abrir la app ES el momento de saberlo.
       void checkUpdateOnResume()
     }
@@ -549,6 +559,52 @@ async function bootstrap(): Promise<void> {
 
   void refreshVisible('auto')
   void setupUpdates()
+}
+
+/* ------------------------------------------------------------------ *
+ * Horario oficial descargado                                           *
+ * ------------------------------------------------------------------ */
+
+/**
+ * Busca el GTFS oficial vigente y, si mejora al que se usa, lo cambia en
+ * caliente. Automatica: solo si toca (`downloadDue`) y en silencio salvo en el
+ * registro. Manual (`force`, boton de Ajustes): siempre, y dice lo que paso.
+ */
+async function refreshScheduleFeed(force = false): Promise<void> {
+  const network = state.network
+  if (!network) {
+    return
+  }
+
+  if (force) {
+    state.scheduleCheck = { checking: true, message: null }
+    render()
+  }
+
+  const result = await checkForNewFeed(network, state.scheduleOrigin, { force })
+
+  if (result.status === 'adopted' && result.schedule) {
+    state.schedule = result.schedule
+    state.scheduleOrigin = result.origin ?? null
+    state.scheduleError = null
+    log('info', 'horario', result.message)
+  } else if (result.status === 'same') {
+    if (result.origin) {
+      state.scheduleOrigin = result.origin
+    }
+    log('info', 'horario', result.message)
+  } else if (result.status === 'failed' || result.status === 'rejected') {
+    log('warn', 'horario', result.message)
+  }
+
+  if (force) {
+    const tone = result.status === 'failed' || result.status === 'rejected' ? 'warn' : 'info'
+    state.scheduleCheck = { checking: false, message: { tone, text: result.message } }
+  }
+
+  if (force || result.status === 'adopted' || result.status === 'same') {
+    render()
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -3021,6 +3077,10 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       await checkUpdateManually()
       return
 
+    case 'check-schedule-feed':
+      await refreshScheduleFeed(true)
+      return
+
     case 'dismiss-update':
       // Solo hasta el proximo arranque: no se guarda en disco a proposito.
       state.update.dismissed = true
@@ -4928,7 +4988,7 @@ function refinePlanOnStreets(plan: PlanOutcome): PlanOutcome {
  * Se calcula la frecuencia real de esa línea en esa parada (la mediana de los
  * huecos entre salidas programadas) y se supone que se llega a la mitad del
  * hueco, que es lo que ocurre cuando no se mira el horario. Usar "la próxima
- * salida a las 08:12" sería más preciso, pero el GTFS incluido caduca y esa
+ * salida a las 08:12" sería más preciso, pero el horario puede quedarse sin descargar y caducar, y esa
  * hora exacta acabaría siendo mentira; una frecuencia envejece mucho mejor.
  */
 function estimateWait(

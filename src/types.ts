@@ -96,10 +96,13 @@ export interface StopFeed {
 export type ServiceDayType = 'weekday' | 'saturday' | 'sunday'
 
 export interface ScheduleDataset {
-  /** Fecha de validez declarada por el feed (rango de calendar_dates.txt). */
+  /** Fecha de validez declarada por el feed (`YYYY-MM-DD`, de calendar.txt y calendar_dates.txt). */
   validFrom: string | null
   validTo: string | null
+  /** Su ultimo dia de servicio ya ha pasado. */
   stale: boolean
+  /** Pasos por parada leidos de stop_times.txt: cero es un feed inservible. */
+  passCount: number
   /**
    * Horas de paso programadas (HH:MM) de una linea por una parada.
    * Con `directionKey` se limitan al sentido indicado; sin el se devuelven los

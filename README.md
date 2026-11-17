@@ -23,12 +23,13 @@ src/
     streets.ts             Callejero peatonal: por dónde se anda de verdad
     network.ts             Red oficial de líneas, sentidos y paradas
     schedule.ts            Horario programado a partir del GTFS estático
+    gtfs-feed.ts           Descarga, validación y elección del GTFS oficial vigente
     notifications.ts       Notificaciones locales
     widget.ts              Puente con el widget de la pantalla de inicio
 public/data/
   network.json             Red oficial generada (27 líneas · 80 sentidos)
   streets.json             Callejero peatonal de OpenStreetMap (carga diferida)
-  gtfs.zip                 GTFS estático (solo horario teórico)
+  gtfs.zip                 GTFS estático incluido: reserva si no hay uno descargado
 android/                   Proyecto nativo, servicio en primer plano incluido
   app/src/main/java/com/icuas/salbus/
 tools/                     Generadores y comprobaciones
@@ -55,7 +56,7 @@ Todo procede de **Salamanca de Transportes**:
 | --- | --- | --- |
 | Llegadas en tiempo real | `salamancadetransportes.com/api/siri/arrivals?stop=<parada>` | En vivo |
 | Líneas, sentidos y paradas | `salamancadetransportes.com/informacion-de-lineas/lineas/` | `npm run data:network` |
-| Horario programado | `public/data/gtfs.zip` (GTFS estático) | Manual |
+| Horario programado | GTFS oficial vía Mobility Database (`mdb-2823`); reserva: `public/data/gtfs.zip` | Solo, cada pocos días |
 | Calles para los paseos | OpenStreetMap vía Overpass | `npm run data:streets` |
 
 La página de líneas incrusta, por cada línea, los atributos
@@ -103,12 +104,52 @@ Y un matiz de `«llegando»`: la web oficial lo marca por distancia (menos de
 acaba de terminar está a veinte metros pero no sale hasta dentro de nueve
 minutos. Hace falta además que quede un minuto o menos.
 
-> El GTFS incluido declara servicio del 2026-03-16 al 2026-03-31. Está caducado y
-> la app lo advierte: se usa como horario teórico en la pantalla de
+> El horario programado se usa en Info (horarios de cabecera), en la pantalla de
 > puntualidad y, **solo si se pide a mano**, como estimación de llegada en una
 > parada cuya fuente en vivo no contesta (botón «Ver tiempos estimados por
 > horario», marcado ±5 min). Esas estimaciones nunca se mezclan con tiempos
 > reales y desaparecen en cuanto la parada vuelve a recibir datos de la fuente.
+
+### El horario oficial se descarga solo
+
+Salamanca de Transportes publica su GTFS en el Punto de Acceso Nacional
+(`nap.transportes.gob.es`, fichero 1598), pero ahí hace falta registro y clave.
+Mobility Database lo replica a diario sin autenticación como **`mdb-2823`**, y
+de ahí lo descarga la app (`GTFS_FEED_URL` en `src/services/gtfs-feed.ts`: si la
+ruta cambia, basta con tocar esa constante). Cada versión cubre unas dos semanas.
+
+- **Al arrancar** no se toca la red: se elige entre el feed descargado
+  (IndexedDB, base `salbus-gtfs`) y el incluido (`public/data/gtfs.zip`). Gana el
+  descargado si cubre hoy; si no, el que cubra hoy; si ninguno, el que termine
+  más tarde, y la app avisa de que está caducado (`pickFeed`).
+- **Cuándo se descarga** (`downloadDue`), al arrancar y cada vez que la app
+  vuelve a primer plano: si no hay feed guardado, si el guardado no cubre hoy, si
+  le quedan menos de 5 días o si la última descarga tiene más de 3 días. Tras un
+  fallo, o tras bajar un feed que no mejora nada, se esperan 6 horas antes del
+  siguiente intento automático. Nunca retrasa el arranque.
+- **Validación** antes de adoptarlo: que sea un zip con `routes`, `trips`,
+  `stop_times`, `stops` y `calendar` o `calendar_dates`; que declare fechas; que
+  conozca al menos el 60 % de las paradas y de las líneas de `network.json`; que
+  el horario se pueda construir (algún paso por parada), y que **sea más útil**
+  que el que se usa (cubre hoy, o termina más tarde). Si algo falla se descarta y
+  sigue el anterior.
+- **Se cambia en caliente**: el horario nuevo sustituye al anterior sin
+  reiniciar la app.
+- Se guardan el zip y sus metadatos: fecha de descarga, rango de servicio
+  (de `calendar.txt` y `calendar_dates.txt`) y `Last-Modified` si la fuente lo
+  manda.
+- En **Android** se descarga con `CapacitorHttp` (`responseType: 'arraybuffer'`,
+  que el plugin nativo devuelve en base64), sin CORS. En el **navegador** se
+  intenta un `fetch`; si la fuente no admite CORS falla y se sigue con lo que haya.
+- Info y Ajustes › Acerca de y datos dicen de dónde sale el horario y sus fechas
+  («Horario oficial del 15 al 30 de noviembre · actualizado hace 2 h»), avisan si
+  está caducado, y Ajustes tiene el botón **Buscar horario nuevo**.
+
+El incluido declara servicio del 2026-03-16 al 2026-03-31 (día a día en
+`calendar_dates.txt`): ya solo es la reserva para el primer arranque sin
+conexión. El servicio nativo de Android no lee el GTFS (los pasos medidos en
+segundo plano se emparejan con el horario en la parte web), así que no necesita
+recibir el feed descargado.
 
 ## Ritmo de consultas a la fuente
 
@@ -844,11 +885,11 @@ proponía dos saltos para ganar un minuto) y tope de dos.
 
 El tiempo dentro del autobús se **estima** con la distancia real entre paradas
 del recorrido a 17 km/h más una espera por parada. El GTFS daría minutos
-exactos, pero son 543.000 filas y caduca: indexarlas por trayecto encarecería el
+exactos, pero son 543.000 filas y cambia cada dos semanas: indexarlas por trayecto encarecería el
 arranque de TODA la app por una función experimental. La espera en parada sí sale
 del horario cuando lo hay, como frecuencia (mediana de los huecos entre salidas
 de la franja, dividida entre dos) y no como "la próxima salida a las 08:12": una
-hora concreta de un feed caducado acaba siendo mentira, una frecuencia envejece
+hora concreta de un feed que no se ha podido renovar acaba siendo mentira, una frecuencia envejece
 mucho mejor.
 
 ### Los paseos van por las calles
@@ -1131,6 +1172,10 @@ npm run android:open   # abre Android Studio
 - **Red de líneas**: `npm run data:network` cuando cambien recorridos o paradas.
 - **Callejero**: `npm run data:streets` de tanto en tanto; OpenStreetMap cambia
   poco y una calle nueva solo afecta a la pestaña experimental.
-- **Horario programado**: sustituir `public/data/gtfs.zip` por un feed vigente.
+- **Horario programado**: se actualiza solo (ver «El horario oficial se descarga
+  solo»). Si Mobility Database cambia la ruta, actualizar `GTFS_FEED_URL` en
+  `src/services/gtfs-feed.ts`. Sustituir `public/data/gtfs.zip` por un feed
+  reciente solo mejora el primer arranque sin conexión; conviene que siga
+  encajando con `network.json`.
 - **Icono**: editar `public/favicon.svg` y `public/icon-mono.svg`, después
   `npm run assets:icons`.

@@ -13,8 +13,11 @@ import type { Arrival, ScheduleDataset, ServiceDayType } from '../types'
  * enseña los pasos del horario marcados como estimados
  * (`estimateArrivalsFromSchedule`). Nunca se mezclan ambos origenes.
  *
- * Nota: el feed distribuido declara servicio dia a dia en `calendar_dates.txt` con
- * un `service_id` distinto por fecha, por lo que caduca. `stale` avisa de ello.
+ * Origen: `gtfs-feed.ts` descarga cada pocos dias el feed oficial vigente y
+ * lo guarda; el GTFS incluido en la app queda de reserva. El incluido declara
+ * servicio dia a dia en `calendar_dates.txt` (un `service_id` por fecha), por lo
+ * que caduca: `stale` avisa de ello. Se leen tanto `calendar.txt` como
+ * `calendar_dates.txt`, por si el feed descargado usa el primero.
  *
  * Sentidos: cada `route_id` del GTFS es en realidad UN sentido ("Cementerio (295)
  * > Puente Ladrillo (309)"), con el mismo rotulo que publica la red oficial. Se
@@ -33,21 +36,44 @@ interface StopTimeRow {
   clock: string
 }
 
+/** Lo que acepta `loadSchedule`: la URL del zip incluido o el zip ya descargado. */
+export type ScheduleSource = string | ArrayBuffer | Uint8Array | Blob
+
+/**
+ * Carga el horario desde una URL (el GTFS incluido, `/data/gtfs.zip`) o desde
+ * los bytes de un zip ya en memoria (el feed descargado y guardado por
+ * `gtfs-feed.ts`).
+ */
 export async function loadSchedule(
   network: Network | null = null,
-  url = '/data/gtfs.zip',
+  source: ScheduleSource = BUNDLED_GTFS_URL,
 ): Promise<ScheduleDataset> {
-  const response = await fetch(url)
-  if (!response.ok) {
-    throw new Error(`No se pudo descargar el GTFS estatico (HTTP ${response.status}).`)
+  return scheduleFromZip(await openGtfsZip(source), network)
+}
+
+/** GTFS que viaja dentro de la app: la reserva cuando no hay uno descargado mejor. */
+export const BUNDLED_GTFS_URL = '/data/gtfs.zip'
+
+/** Abre un zip GTFS desde una URL o desde sus bytes. */
+export async function openGtfsZip(source: ScheduleSource): Promise<JSZip> {
+  if (typeof source === 'string') {
+    const response = await fetch(source)
+    if (!response.ok) {
+      throw new Error(`No se pudo descargar el GTFS estatico (HTTP ${response.status}).`)
+    }
+    return JSZip.loadAsync(await response.arrayBuffer())
   }
 
-  const zip = await JSZip.loadAsync(await response.arrayBuffer())
+  return JSZip.loadAsync(source)
+}
 
-  const [routes, trips, stopTimes, calendarDates] = await Promise.all([
+/** Construye el horario a partir de un zip GTFS ya abierto. */
+export async function scheduleFromZip(zip: JSZip, network: Network | null = null): Promise<ScheduleDataset> {
+  const [routes, trips, stopTimes, calendar, calendarDates] = await Promise.all([
     readCsv(zip, 'routes.txt'),
     readCsv(zip, 'trips.txt'),
     readCsv(zip, 'stop_times.txt'),
+    readCsv(zip, 'calendar.txt'),
     readCsv(zip, 'calendar_dates.txt'),
   ])
 
@@ -79,27 +105,17 @@ export async function loadSchedule(
     }
   }
 
-  // Tipo de dia de cada service_id, deducido de las fechas de calendar_dates.
-  const dayTypeByServiceId = new Map<string, ServiceDayType>()
-  const dates: string[] = []
-
-  for (const row of calendarDates) {
-    const serviceId = text(row.service_id)
-    const date = text(row.date)
-    if (!serviceId || date.length !== 8 || text(row.exception_type) !== '1') {
-      continue
-    }
-
-    dates.push(date)
-    dayTypeByServiceId.set(serviceId, dayTypeFromGtfsDate(date))
-  }
-
-  dates.sort()
-  const validFrom = dates[0] ?? null
-  const validTo = dates[dates.length - 1] ?? null
+  // Tipos de dia de cada service_id: de los dias de la semana de calendar.txt
+  // y de las fechas sueltas de calendar_dates.txt. El feed incluido solo trae
+  // lo segundo (un service_id por fecha); otros feeds traen lo primero.
+  const dayTypesByServiceId = serviceDayTypes(calendar, calendarDates)
+  const range = serviceDateRange(calendar, calendarDates)
+  const validFrom = range?.from ?? null
+  const validTo = range?.to ?? null
 
   // Indice parada -> pasos, ya filtrado a lo minimo necesario.
   const byStop = new Map<string, StopTimeRow[]>()
+  let passCount = 0
   for (const row of stopTimes) {
     const tripId = text(row.trip_id)
     const stopId = text(row.stop_id)
@@ -112,6 +128,7 @@ export async function loadSchedule(
       continue
     }
 
+    passCount += 1
     const list = byStop.get(stopId)
     if (list) {
       list.push({ tripId, stopId, clock })
@@ -128,6 +145,7 @@ export async function loadSchedule(
     validFrom: formatIsoDate(validFrom),
     validTo: formatIsoDate(validTo),
     stale: isStale(validTo),
+    passCount,
 
     getScheduledTimes(
       stopId: string,
@@ -155,10 +173,10 @@ export async function loadSchedule(
           continue
         }
 
-        // Si el service_id no aparece en calendar_dates no se puede clasificar el
+        // Si el service_id no aparece en el calendario no se puede clasificar el
         // dia; se incluye para no dejar la tabla vacia.
-        const rowDayType = dayTypeByServiceId.get(info.serviceId)
-        if (rowDayType && rowDayType !== dayType) {
+        const rowDayTypes = dayTypesByServiceId.get(info.serviceId)
+        if (rowDayTypes && !rowDayTypes.has(dayType)) {
           continue
         }
 
@@ -321,19 +339,122 @@ function formatIsoDate(value: string | null): string | null {
   return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
 }
 
-function isStale(validTo: string | null): boolean {
+/**
+ * Caducado = su ultimo dia de servicio ya paso. El propio ultimo dia todavia
+ * vale: comparar con la medianoche en que empieza lo daba por caducado un dia
+ * antes de tiempo.
+ */
+function isStale(validTo: string | null, today = new Date()): boolean {
   if (!validTo || validTo.length !== 8) {
     return true
   }
-
-  const end = new Date(
-    Number.parseInt(validTo.slice(0, 4), 10),
-    Number.parseInt(validTo.slice(4, 6), 10) - 1,
-    Number.parseInt(validTo.slice(6, 8), 10),
-  )
-
-  return end.getTime() < Date.now()
+  return validTo < gtfsDate(today)
 }
+
+/** `YYYYMMDD` del dia local, el formato de fechas del GTFS. */
+export function gtfsDate(at: Date): string {
+  return `${at.getFullYear()}${String(at.getMonth() + 1).padStart(2, '0')}${String(at.getDate()).padStart(2, '0')}`
+}
+
+/** Rango de fechas de servicio de un feed, en `YYYYMMDD`. */
+export interface GtfsDateRange {
+  from: string
+  to: string
+}
+
+/**
+ * Primer y ultimo dia con servicio declarado.
+ *
+ * Se juntan las dos fuentes del GTFS: los periodos de calendar.txt
+ * (`start_date`..`end_date`, si algun dia de la semana tiene servicio) y las
+ * fechas añadidas de calendar_dates.txt (`exception_type` 1). Las fechas
+ * quitadas (tipo 2) no amplian nada. Sin ninguna de las dos, null.
+ */
+export function serviceDateRange(calendar: CsvRow[], calendarDates: CsvRow[]): GtfsDateRange | null {
+  let from: string | null = null
+  let to: string | null = null
+  const widen = (start: string, end: string) => {
+    if (!from || start < from) from = start
+    if (!to || end > to) to = end
+  }
+
+  for (const row of calendar) {
+    const start = text(row.start_date)
+    const end = text(row.end_date)
+    const runs = WEEKDAY_COLUMNS.some((column) => text(row[column]) === '1')
+    if (isGtfsDate(start) && isGtfsDate(end) && start <= end && runs) {
+      widen(start, end)
+    }
+  }
+
+  for (const row of calendarDates) {
+    const date = text(row.date)
+    if (isGtfsDate(date) && text(row.exception_type) === '1') {
+      widen(date, date)
+    }
+  }
+
+  return from && to ? { from, to } : null
+}
+
+const WEEKDAY_COLUMNS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const
+
+/** Tipo de dia de cada columna de calendar.txt. */
+const DAY_TYPE_BY_COLUMN: Record<(typeof WEEKDAY_COLUMNS)[number], ServiceDayType> = {
+  monday: 'weekday',
+  tuesday: 'weekday',
+  wednesday: 'weekday',
+  thursday: 'weekday',
+  friday: 'weekday',
+  saturday: 'saturday',
+  sunday: 'sunday',
+}
+
+/**
+ * Tipos de dia en que circula cada service_id.
+ *
+ * Un servicio puede valer para varios (calendar.txt de lunes a domingo), asi
+ * que es un conjunto y no un solo tipo.
+ */
+export function serviceDayTypes(calendar: CsvRow[], calendarDates: CsvRow[]): Map<string, Set<ServiceDayType>> {
+  const result = new Map<string, Set<ServiceDayType>>()
+  const add = (serviceId: string, dayType: ServiceDayType) => {
+    const set = result.get(serviceId)
+    if (set) {
+      set.add(dayType)
+    } else {
+      result.set(serviceId, new Set([dayType]))
+    }
+  }
+
+  for (const row of calendar) {
+    const serviceId = text(row.service_id)
+    if (!serviceId) continue
+    for (const column of WEEKDAY_COLUMNS) {
+      if (text(row[column]) === '1') {
+        add(serviceId, DAY_TYPE_BY_COLUMN[column])
+      }
+    }
+  }
+
+  for (const row of calendarDates) {
+    const serviceId = text(row.service_id)
+    const date = text(row.date)
+    if (serviceId && isGtfsDate(date) && text(row.exception_type) === '1') {
+      add(serviceId, dayTypeFromGtfsDate(date))
+    }
+  }
+
+  return result
+}
+
+function isGtfsDate(value: string): boolean {
+  return /^\d{8}$/.test(value)
+}
+
+/** Lee un fichero CSV del zip (vacio si no esta). Lo usa tambien la validacion del feed. */
+export { readCsv as readGtfsCsv }
+export type { CsvRow as GtfsRow }
 
 export function currentDayType(reference = new Date()): ServiceDayType {
   const day = reference.getDay()
