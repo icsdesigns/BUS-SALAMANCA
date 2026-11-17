@@ -128,8 +128,11 @@ export async function readInstalledVersion(): Promise<VersionInfo> {
  * booleano un fallo real (sin cobertura, 403 por limite de peticiones,
  * repositorio privado) se veria EXACTAMENTE IGUAL que «no hay novedades». La
  * comprobacion manual de Ajustes usa este mismo motivo para poder contarlo.
+ *
+ * `manual`: la busqueda que pide la persona desde Ajustes. Esa se salta las
+ * seis horas de espera: quien pulsa «Buscar actualización» quiere la ultima ya.
  */
-export async function checkForUpdate(): Promise<CheckOutcome> {
+export async function checkForUpdate(options: { manual?: boolean } = {}): Promise<CheckOutcome> {
   if (!isNativeAndroid()) {
     return { status: 'unsupported' }
   }
@@ -172,8 +175,9 @@ export async function checkForUpdate(): Promise<CheckOutcome> {
     }
 
     // Recien publicada: durante sus primeras seis horas no se ofrece ni se
-    // descarga, se responde como si no hubiera novedad. Ver RELEASE_GRACE_MS.
-    if (!isReleaseMature(release)) {
+    // descarga sola, se responde como si no hubiera novedad (ver
+    // RELEASE_GRACE_MS). La busqueda manual si la ve.
+    if (!options.manual && !isReleaseMature(release)) {
       return { status: 'current', versionCode: installed.versionCode }
     }
 

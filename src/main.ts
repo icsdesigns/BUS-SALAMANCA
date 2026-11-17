@@ -896,7 +896,7 @@ async function checkUpdateManually(): Promise<void> {
   render()
 
   await syncInstallPermission()
-  const outcome = await checkForUpdate()
+  const outcome = await checkForUpdate({ manual: true })
 
   if (outcome.status === 'update') {
     state.update.release = outcome.release

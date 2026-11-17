@@ -859,7 +859,13 @@ async function main() {
   }
 
   check('la comprobacion retiene las releases de menos de seis horas',
-    /isNewer\(release, installed\.versionCode\)[\s\S]{0,400}if \(!isReleaseMature\(release\)\) \{\s*return \{ status: 'current'/.test(latestOnly))
+    /isNewer\(release, installed\.versionCode\)[\s\S]{0,400}if \(!options\.manual && !isReleaseMature\(release\)\) \{\s*return \{ status: 'current'/.test(latestOnly))
+  {
+    const mainSrc = await fs.readFile(path.join(projectRoot, 'src', 'main.ts'), 'utf8')
+    check('la busqueda manual de Ajustes se salta las seis horas; la automatica no',
+      /async function checkUpdateManually[\s\S]{0,300}checkForUpdate\(\{ manual: true \}\)/.test(mainSrc)
+        && (mainSrc.match(/checkForUpdate\(\)/g) ?? []).length === 2)
+  }
   check('la comparacion usa el versionCode que dice el sistema',
     latestOnly.includes('const installed = await readInstalledVersion()')
       && latestOnly.includes('isNewer(release, installed.versionCode)'))
