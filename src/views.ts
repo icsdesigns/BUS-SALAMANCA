@@ -64,7 +64,7 @@ import type {
   StopFeed,
   TransitLine,
 } from './types'
-import { IG_GUIDES, igGuide, isIgTab, renderInfographic, type IgTab } from './infographics'
+import { igGuide, isIgTab, renderInfographic } from './infographics'
 import { renderTrafficCutsNotice, renderTrafficCutsSection } from './traffic-view'
 import {
   arrivalTone,
@@ -2312,74 +2312,111 @@ function renderMonitorPasses(passes: Array<{ at: number, minutes: number }>): st
  * Tour de bienvenida                                                  *
  * ================================================================== */
 
+interface TourStep {
+  iconName: string
+  title: string
+  body: string
+}
+
 /**
- * Recorrido por la app: un paso por pestaña, cada uno con su infografía
- * animada, y uno último con Ajustes y los dos permisos.
+ * Recorrido mínimo por las pestañas inferiores, sin animaciones: un icono, un
+ * título y dos frases por paso. Las infografías animadas no van aquí; cada
+ * pestaña tiene la suya en el botón de información del banner superior.
  *
  * Se abre solo una vez por persona (ver `markTourSeen`) y desde Ajustes > Ayuda
  * las veces que se quiera. Termina en los permisos porque sin ellos el aviso de
  * próximo bus no funciona con la pantalla apagada, y nada en la pantalla
  * principal lo delata.
  */
-const TOUR_TABS: IgTab[] = IG_GUIDES.map((guide) => guide.tab)
+const TOUR: TourStep[] = [
+  {
+    iconName: 'home',
+    title: 'Inicio',
+    body: 'El reloj, tus seguimientos en marcha y tus paradas guardadas. Toca una parada para ver sus llegadas. Sus botones: la campana abre «Avisarme del próximo bus», las flechas actualizan, el lápiz cambia el nombre y la papelera la quita.',
+  },
+  {
+    iconName: 'search',
+    title: 'Buscar',
+    body: 'Encuentra una parada por su nombre o su línea, por las que tienes más cerca, o tocándola en el mapa.',
+  },
+  {
+    iconName: 'bell',
+    title: 'Seguir',
+    body: 'El aviso de próximo bus: te dice los minutos que faltan, por cuántas paradas viene y te llega aunque cierres la app.',
+  },
+  {
+    iconName: 'warn',
+    title: 'Tráfico',
+    body: 'Los cortes de tráfico del Ayuntamiento, en curso y de los próximos días, con las líneas de autobús a las que afectan.',
+  },
+  {
+    iconName: 'info',
+    title: 'Info',
+    body: 'Los horarios oficiales de cada línea, por sentido y por día, con la primera salida, la última y los descansos señalados.',
+  },
+  {
+    iconName: 'settings',
+    title: 'Ajustes y ayuda',
+    body: 'El engranaje de arriba abre Ajustes: avisos, apariencia, ubicación, actualizaciones y este tour. El botón de información del banner enseña, en cada pestaña, una animación de cómo se usa.',
+  },
+  {
+    iconName: 'bell',
+    title: 'Permisos que hay que conceder',
+    body: 'Notificaciones, para que el aviso pueda mostrarse; y sin optimización de batería, para que siga actualizándose con la pantalla apagada.',
+  },
+]
 
 /** Pasos del tour; `main.ts` lo necesita para saber cuándo se ha acabado. */
-export const TOUR_STEPS = TOUR_TABS.length + 1
+export const TOUR_STEPS = TOUR.length
 
 function renderTour(): string {
   if (!state.tour.open || !state.ready) {
     return ''
   }
 
-  const index = Math.min(state.tour.step, TOUR_STEPS - 1)
-  const last = index === TOUR_STEPS - 1
-  const guide = last ? null : igGuide(TOUR_TABS[index])
-
-  const body = guide
-    ? `
-      <div class="tour-step" data-key="tour-step-${guide.tab}">
-        ${renderInfographic(guide.tab)}
-        <h3 id="tour-title">${esc(guide.label)}</h3>
-        <p>${esc(guide.summary)}</p>
-      </div>
-    `
-    : `
-      <div class="tour-step" data-key="tour-step-ajustes">
-        <div class="tour-icon">${icon('settings')}</div>
-        <h3 id="tour-title">Ajustes y permisos</h3>
-        <p>El engranaje de arriba abre Ajustes: avisos, apariencia, ubicación, actualizaciones y esta misma ayuda, con una animación por pestaña. Concede estos dos permisos para que el aviso siga funcionando con la pantalla apagada.</p>
-        <div class="tour-perms">
-          ${renderPermissionRow(
-            'Notificaciones',
-            'Permite mostrar el aviso con los minutos que faltan.',
-            state.permissions.notifications,
-            'request-notifications',
-          )}
-          ${renderPermissionRow(
-            'Sin optimización de batería',
-            'Evita que Android detenga las actualizaciones.',
-            state.permissions.battery,
-            'request-battery',
-          )}
-        </div>
-      </div>
-    `
+  const index = Math.min(state.tour.step, TOUR.length - 1)
+  const step = TOUR[index]
+  const last = index === TOUR.length - 1
 
   return `
     <div class="tour-backdrop"></div>
-    <section class="tour" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+    <section class="tour" role="dialog" aria-modal="true" aria-label="Cómo se usa SALBUS">
       <header class="tour-head">
-        <span class="tour-badge">Cómo se usa SALBUS · ${index + 1} de ${TOUR_STEPS}</span>
+        <span class="tour-badge">${esc(APP_VERSION)}</span>
         <button class="mini-btn" type="button" data-action="tour-close" aria-label="Cerrar el tour">
           ${icon('close')}
         </button>
       </header>
 
-      <div class="tour-body">${body}</div>
+      <div class="tour-body">
+        <div class="tour-icon">${icon(step.iconName)}</div>
+        <h3>${esc(step.title)}</h3>
+        <p>${esc(step.body)}</p>
+      </div>
+
+      ${
+        last
+          ? `<div class="tour-perms">
+              ${renderPermissionRow(
+                'Notificaciones',
+                'Permite mostrar el aviso con los minutos que faltan.',
+                state.permissions.notifications,
+                'request-notifications',
+              )}
+              ${renderPermissionRow(
+                'Sin optimización de batería',
+                'Evita que Android detenga las actualizaciones.',
+                state.permissions.battery,
+                'request-battery',
+              )}
+            </div>`
+          : ''
+      }
 
       <div class="tour-dots" aria-hidden="true">
-        ${Array.from({ length: TOUR_STEPS }, (_, position) =>
-          `<span class="tour-dot${position === index ? ' is-current' : ''}"></span>`,
+        ${TOUR.map(
+          (_, position) =>
+            `<span class="tour-dot${position === index ? ' is-current' : ''}"></span>`,
         ).join('')}
       </div>
 
@@ -2416,7 +2453,7 @@ function renderHelpDialog(): string {
         </button>
       </header>
       <div class="tour-body">
-        <div class="tour-step" data-key="help-step-${guide.tab}">
+        <div class="help-step" data-key="help-step-${guide.tab}">
           ${renderInfographic(guide.tab)}
           <h3 id="help-title">Cómo se usa ${esc(guide.label)}</h3>
           <p>${esc(guide.summary)}</p>
@@ -3228,7 +3265,7 @@ function settingsPanels(): SettingsPanelDefinition[] {
       id: 'ayuda',
       iconName: 'help',
       title: 'Ayuda',
-      summary: () => 'El tour y una animación por pestaña',
+      summary: () => 'El tour de la aplicación',
       body: renderHelpSettings,
     },
     {
@@ -3390,37 +3427,15 @@ function renderLocationSettings(): string {
 }
 
 /**
- * Ayuda: el tour completo y, una a una, las infografías de cada pestaña. Solo
- * se anima la elegida, y solo con el panel abierto.
+ * Ayuda: el tour. Las animaciones de cada pestaña están en el botón de
+ * información del banner superior, no aquí.
  */
 function renderHelpSettings(): string {
-  const open = state.settingsOpen.includes('ayuda')
-  const current = state.settingsHelpTab
-  const guide = igGuide(current)
-
   return `
     <button class="btn btn-primary btn-block" type="button" data-action="tour-open">
       ${icon('play')} Ver el tour de la aplicación
     </button>
-
-    <div class="set-help-tabs" role="group" aria-label="Animación de la pestaña">
-      ${IG_GUIDES.map(
-        (item) => `
-          <button
-            class="set-help-tab"
-            type="button"
-            aria-pressed="${item.tab === current}"
-            data-action="help-pick"
-            data-topic="${item.tab}"
-          >${icon(item.iconName)}<span>${esc(item.label)}</span></button>
-        `,
-      ).join('')}
-    </div>
-
-    <div class="set-help-view" data-key="set-help-${current}">
-      ${renderInfographic(current, !open)}
-      <p class="set-help-copy">${esc(guide.summary)}</p>
-    </div>
+    <p class="text-muted">En cada pestaña, el botón <span class="inline-icon">${icon('info')}</span> de arriba enseña una animación de cómo se usa.</p>
   `
 }
 

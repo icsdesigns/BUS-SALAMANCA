@@ -3382,15 +3382,6 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
     }
 
     // La infografía que se mira en Ajustes > Ayuda.
-    case 'help-pick': {
-      const topic = element.dataset.topic
-      if (isIgTab(topic)) {
-        state.settingsHelpTab = topic
-        render()
-      }
-      return
-    }
-
     // El botón de información del banner de cada pestaña: la infografía de esa pestaña sola.
     case 'help-open': {
       const topic = element.dataset.topic
