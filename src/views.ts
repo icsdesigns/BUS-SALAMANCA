@@ -424,6 +424,8 @@ function renderScreen(): string {
  *
  * «Ahora no» solo vale para esta sesion (`dismissed` no se guarda en disco):
  * mientras la actualizacion siga pendiente, la ventana vuelve en cada arranque.
+ * Pasados diez dias desde la primera version pendiente (`update.mandatory`) ya
+ * no hay «Ahora no» ni X: solo actualizar.
  */
 function renderUpdateDialog(): string {
   const update = state.update
@@ -434,13 +436,17 @@ function renderUpdateDialog(): string {
     || (update.phase === 'error' && update.release !== null)
 
   // El tour manda mientras esta abierto: dos ventanas apiladas no se leen.
-  if (!active || update.dismissed || !update.release || !state.ready || state.tour.open) {
+  // Obligatoria: «Ahora no» no existe, asi que `dismissed` no la oculta.
+  const mandatory = update.mandatory
+  if (!active || (update.dismissed && !mandatory) || !update.release || !state.ready || state.tour.open) {
     return ''
   }
 
   const needsPermission = update.phase === 'ready' && !update.canInstall
   /** Una descarga o una instalacion en curso no se dejan cerrar a medias. */
   const busy = update.phase === 'downloading' || update.phase === 'installing'
+  /** Ni a medias ni, si es obligatoria, en ningun momento. */
+  const closable = !busy && !mandatory
 
   return `
     <div class="modal-backdrop"></div>
@@ -448,14 +454,27 @@ function renderUpdateDialog(): string {
       <div class="update-head">
         ${icon('refresh')}
         <div class="update-copy">
-          <strong>Hay una versión nueva</strong>
+          <strong>${mandatory ? 'Actualización obligatoria' : 'Hay una versión nueva'}</strong>
           <span>SALBUS v${esc(update.release.versionName)} · compilación ${update.release.versionCode}</span>
           <span>Tienes la v${esc(state.installed.versionName)} · compilación ${state.installed.versionCode}</span>
         </div>
-        <button class="mini-btn" type="button" data-action="dismiss-update" aria-label="Ahora no" ${
-          busy ? 'disabled' : ''
-        }>${icon('close')}</button>
+        ${
+          mandatory
+            ? ''
+            : `<button class="mini-btn" type="button" data-action="dismiss-update" aria-label="Ahora no" ${
+                busy ? 'disabled' : ''
+              }>${icon('close')}</button>`
+        }
       </div>
+
+      ${
+        mandatory
+          ? notice(
+              'warn',
+              'Hace más de 10 días que salió una versión que aún no tienes. Para seguir usando SALBUS hay que actualizar.',
+            )
+          : ''
+      }
 
       ${
         needsPermission
@@ -481,7 +500,7 @@ function renderUpdateDialog(): string {
       </div>
 
       ${
-        busy
+        !closable
           ? ''
           : `<button class="btn btn-secondary btn-block" type="button" data-action="dismiss-update">
                Ahora no

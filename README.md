@@ -1001,6 +1001,15 @@ alfa, así que un icono con fondo se vería como un cuadrado blanco.
 
 ## Actualización automática
 
+> **Seis horas de espera y diez días de plazo.** Una versión nueva no se ofrece
+> hasta seis horas después de publicarse (`RELEASE_GRACE_MS`). Desde que sale la
+> primera versión que la instalada no tiene, hay diez días para actualizar
+> (`MANDATORY_AFTER_MS`): pasados, la ventana de actualizar ya no tiene X ni
+> «Ahora no». Los diez días se cuentan con la lista de releases
+> (`/releases?per_page=30`), así que una publicación nueva no reinicia la cuenta;
+> si la lista no llega, se cuenta desde la última publicada. Sin conexión no se
+> bloquea nada: sin poder descargar, obligar solo dejaría la app inservible.
+
 > **Qué versión tengo instalada lo dice el sistema**, no el número que Vite
 > incrusta en el bundle. Ese número se queda congelado si la WebView sirve una
 > copia vieja de la página, y con él la app se ofrecía a sí misma la

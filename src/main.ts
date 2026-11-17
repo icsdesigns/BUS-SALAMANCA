@@ -649,6 +649,7 @@ async function setupUpdates(): Promise<void> {
 
   if (outcome.status === 'update') {
     state.update.release = outcome.release
+    state.update.mandatory = outcome.mandatory
     // Una descarga anterior solo vale si es EXACTAMENTE la versión que se está
     // ofreciendo. Antes valía cualquiera: quien había descargado una release y
     // no la había instalado se encontraba con que «Instalar» le reinstalaba la
@@ -723,10 +724,18 @@ async function checkUpdateOnResume(): Promise<void> {
   // pulsó "Ahora no" no puede encontrarse el mismo aviso cada vez que cambia de
   // aplicación y vuelve.
   if (state.update.release?.versionCode === outcome.release.versionCode) {
+    // Salvo que en este tiempo haya vencido el plazo: entonces vuelve, y ya sin
+    // poder cerrarse.
+    if (outcome.mandatory && !state.update.mandatory) {
+      state.update.mandatory = true
+      state.update.dismissed = false
+      render()
+    }
     return
   }
 
   state.update.release = outcome.release
+  state.update.mandatory = outcome.mandatory
   state.update.dismissed = false
   state.update.error = null
   state.update.downloadedPath = await adoptPendingDownload(outcome.release.versionCode)
@@ -891,6 +900,7 @@ async function checkUpdateManually(): Promise<void> {
 
   if (outcome.status === 'update') {
     state.update.release = outcome.release
+    state.update.mandatory = outcome.mandatory
     state.update.downloadedPath = await adoptPendingDownload(outcome.release.versionCode)
     state.update.phase = state.update.downloadedPath ? 'ready' : 'available'
     state.update.dismissed = false
@@ -902,6 +912,7 @@ async function checkUpdateManually(): Promise<void> {
     // La comprobación devuelve el versionCode REAL del sistema; si una
     // instalación se quedó a medias, aquí se ve el número de siempre.
     state.update.release = null
+    state.update.mandatory = false
     state.update.phase = 'idle'
     state.update.downloadedPath = await adoptPendingDownload(null)
     state.update.manualMessage = {
@@ -3082,6 +3093,10 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       return
 
     case 'dismiss-update':
+      // Una actualizacion obligatoria no se puede posponer.
+      if (state.update.mandatory) {
+        return
+      }
       // Solo hasta el proximo arranque: no se guarda en disco a proposito.
       state.update.dismissed = true
       render()

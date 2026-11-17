@@ -360,6 +360,11 @@ export interface UpdateState {
   error: string | null
   /** El aviso se puede posponer; vuelve en el siguiente arranque. */
   dismissed: boolean
+  /**
+   * Diez dias o mas sin la version pendiente: la ventana no se puede cerrar
+   * («Ahora no» desaparece) hasta actualizar.
+   */
+  mandatory: boolean
   /** Resultado de la comprobacion MANUAL de Ajustes, que si cuenta lo que pasa. */
   manualMessage: { text: string, tone: 'info' | 'warn' | 'error' } | null
   manualChecking: boolean
@@ -864,6 +869,7 @@ export const state: AppState = {
     canInstall: false,
     error: null,
     dismissed: false,
+    mandatory: false,
     manualMessage: null,
     manualChecking: false,
   },
