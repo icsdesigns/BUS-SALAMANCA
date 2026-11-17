@@ -5,7 +5,7 @@
  * arriba, la barra de pestañas de abajo, las mismas tarjetas y distintivos de
  * línea— con un dedo que pulsa y el resultado de esa pulsación, en tres o cuatro
  * tiempos que se repiten. Se ven en el tour de bienvenida, en Ajustes > Ayuda y
- * en el botón de ayuda de Tráfico e Info.
+ * en el botón de información del banner superior de cada pestaña.
  *
  * Todo es HTML inline y CSS (`infographics.css`, prefijo `ig-`): nada de vídeo
  * ni de imágenes, para que siga el tema claro u oscuro con las mismas variables

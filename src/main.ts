@@ -3391,7 +3391,7 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       return
     }
 
-    // El botón "?" de Tráfico e Info: la infografía de esa pestaña sola.
+    // El botón de información del banner de cada pestaña: la infografía de esa pestaña sola.
     case 'help-open': {
       const topic = element.dataset.topic
       if (isIgTab(topic)) {

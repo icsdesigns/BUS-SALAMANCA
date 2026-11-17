@@ -501,7 +501,7 @@ export interface AppState {
   settingsHelpTab: IgTab
 
   /**
-   * Ayuda de una sola pestaña abierta (el botón "?" de Tráfico e Info), o
+   * Ayuda de una sola pestaña abierta (el botón de información del banner), o
    * `null`. Es la misma infografía del tour, sin el resto del recorrido.
    */
   help: IgTab | null

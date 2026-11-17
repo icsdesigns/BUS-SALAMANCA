@@ -2751,13 +2751,6 @@ button.tour-backdrop {
   cursor: pointer;
 }
 
-/* Ayuda de pestaña: el "?" del encabezado de Tráfico e Info. */
-.tab-header-help {
-  margin-left: auto;
-  align-self: flex-start;
-  border-radius: var(--r-full);
-}
-
 /* ==================================================================
    Ajustes: paneles desplegables
    ==================================================================

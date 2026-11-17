@@ -64,7 +64,7 @@ import type {
   StopFeed,
   TransitLine,
 } from './types'
-import { IG_GUIDES, igGuide, renderInfographic, type IgTab } from './infographics'
+import { IG_GUIDES, igGuide, isIgTab, renderInfographic, type IgTab } from './infographics'
 import { renderTrafficCutsNotice, renderTrafficCutsSection } from './traffic-view'
 import {
   arrivalTone,
@@ -338,6 +338,19 @@ function renderTopbar(): string {
         <p class="topbar-sub">${esc(subtitle)}</p>
       </div>
       <div class="topbar-actions">
+        ${
+          // Cada pestaña lleva su propia infografía: el botón abre la de la
+          // pestaña en la que estás. Ajustes no tiene.
+          isIgTab(state.tab)
+            ? `<button
+                 class="icon-btn"
+                 type="button"
+                 data-action="help-open"
+                 data-topic="${state.tab}"
+                 aria-label="Cómo se usa ${esc(igGuide(state.tab).label)}"
+               >${icon('info')}</button>`
+            : ''
+        }
         <button
           class="icon-btn${busy ? ' is-spinning' : ''}"
           type="button"
@@ -2384,7 +2397,7 @@ function renderTour(): string {
 
 /**
  * Ayuda de una sola pestaña: su infografía y dos frases, sin el resto del
- * recorrido. La abre el botón "?" del encabezado de Tráfico e Info.
+ * recorrido. La abre el botón de información del banner superior de cada pestaña.
  */
 function renderHelpDialog(): string {
   if (!state.help || !state.ready || state.tour.open) {
@@ -2443,7 +2456,6 @@ function renderInfo(): string {
     'clock',
     'Horarios de las líneas',
     'Salidas oficiales de cada línea, por sentido y por tipo de día.',
-    'info',
   )
 
   // Sin "Cómo llegar" no hay apartados que elegir: Info son los horarios.
@@ -2471,7 +2483,7 @@ function renderInfo(): string {
  * de Inicio ni un buscador arriba: sin él, la pantalla empezaba directamente
  * por una lista y no quedaba claro de qué era.
  */
-function renderTabHeader(iconName: string, title: string, subtitle: string, help?: IgTab): string {
+function renderTabHeader(iconName: string, title: string, subtitle: string): string {
   return `
     <header class="tab-header">
       <span class="tab-header-icon">${icon(iconName)}</span>
@@ -2479,11 +2491,6 @@ function renderTabHeader(iconName: string, title: string, subtitle: string, help
         <h2 class="tab-header-title">${esc(title)}</h2>
         <p class="tab-header-sub">${esc(subtitle)}</p>
       </div>
-      ${
-        help
-          ? `<button class="mini-btn tab-header-help" type="button" data-action="help-open" data-topic="${help}" aria-label="Cómo se usa ${esc(igGuide(help).label)}">${icon('help')}</button>`
-          : ''
-      }
     </header>
   `
 }
@@ -2498,7 +2505,6 @@ function renderTrafico(): string {
       'warn',
       'Cortes de tráfico',
       'Calles cortadas hoy y en los próximos días, y las líneas a las que afectan.',
-      'trafico',
     )}
     ${renderTrafficCutsSection()}
   `
