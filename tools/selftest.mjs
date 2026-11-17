@@ -547,7 +547,7 @@ async function main() {
 
   section('7 · Canal de actualización')
 
-  const { parseTag, readRelease, isNewer } = await import(
+  const { parseTag, readRelease, isNewer, isReleaseMature, shouldOffer, RELEASE_GRACE_MS } = await import(
     pathToUrl(path.join(build, 'release-parser.js'))
   )
   const { resolveVersion, VERSION_CODE_BASE, versionFromSubject, commitVersionName } = await import(
@@ -632,10 +632,55 @@ async function main() {
   check('desde cualquier version se salta directamente a la ultima',
     isNewer(parsed, 1) === true && isNewer(parsed, 431) === true)
 
+  // Seis horas de espera desde la publicacion: antes de eso la release se
+  // trata como si no existiera (no se ofrece ni se descarga).
+  const publishedMs = Date.parse(release.published_at)
+  const HOUR = 60 * 60 * 1000
+  check('la espera es de seis horas', RELEASE_GRACE_MS === 6 * HOUR)
+  check('recien publicada no se ofrece',
+    isReleaseMature(parsed, publishedMs + 5 * 60_000) === false
+      && shouldOffer(parsed, 1009, publishedMs + 5 * 60_000) === false)
+  check('a las 5 h 59 min todavia no se ofrece',
+    shouldOffer(parsed, 1009, publishedMs + 6 * HOUR - 60_000) === false)
+  check('a las seis horas justas ya se ofrece',
+    shouldOffer(parsed, 1009, publishedMs + 6 * HOUR) === true)
+  check('pasadas las seis horas se ofrece',
+    shouldOffer(parsed, 1009, publishedMs + 30 * HOUR) === true)
+  check('madura pero no mas nueva sigue sin ofrecerse',
+    shouldOffer(parsed, 1010, publishedMs + 30 * HOUR) === false)
+  check('una fecha en el futuro (reloj atrasado) cuenta como recien publicada',
+    isReleaseMature(parsed, publishedMs - HOUR) === false)
+  check('sin fecha de publicacion no se retiene para siempre',
+    isReleaseMature({ publishedAt: null }, 0) === true
+      && isReleaseMature({ publishedAt: 'no-es-fecha' }, 0) === true)
+
   const latestOnly = await fs.readFile(
     path.join(projectRoot, 'src', 'services', 'updates.ts'), 'utf8')
   check('siempre se consulta la ultima release, no la siguiente',
     latestOnly.includes('/releases/latest') && !latestOnly.includes('releases?page'))
+  // Tour: una sola vez por persona, con una clave que no depende de la version.
+  {
+    const stateSrc = await fs.readFile(path.join(projectRoot, 'src', 'state.ts'), 'utf8')
+    const viewsSrc = await fs.readFile(path.join(projectRoot, 'src', 'views.ts'), 'utf8')
+    const igSrc = await fs.readFile(path.join(projectRoot, 'src', 'infographics.ts'), 'utf8')
+    check('el tour se abre solo si no se ha visto nunca, sin mirar la version',
+      stateSrc.includes("tourSeen: 'salbus.tourSeen'")
+        && stateSrc.includes('tour: { open: !readTourSeen(), step: 0 }')
+        && !/tour: \{ open: [^}]*APP_VERSION/.test(stateSrc))
+    check('el tour tiene un paso por pestaña y no habla de Puntualidad ni de Cómo llegar',
+      ['inicio', 'buscar', 'seguimiento', 'trafico', 'info'].every((tab) => igSrc.includes(`tab: '${tab}'`))
+        && !/Puntualidad|Cómo llegar/.test(igSrc)
+        && viewsSrc.includes('export const TOUR_STEPS = TOUR_TABS.length + 1'))
+    check('los paneles de Ajustes son botones con aria-expanded y región inerte al plegarse',
+      viewsSrc.includes('aria-expanded="${open}"')
+        && viewsSrc.includes('role="region"')
+        && viewsSrc.includes("${open ? '' : ' inert'}"))
+    check('cada infografía se describe en español para lectores de pantalla',
+      /role="img" aria-label="\$\{ARIA\[tab\]\}"/.test(igSrc))
+  }
+
+  check('la comprobacion retiene las releases de menos de seis horas',
+    /isNewer\(release, installed\.versionCode\)[\s\S]{0,400}if \(!isReleaseMature\(release\)\) \{\s*return \{ status: 'current'/.test(latestOnly))
   check('la comparacion usa el versionCode que dice el sistema',
     latestOnly.includes('const installed = await readInstalledVersion()')
       && latestOnly.includes('isNewer(release, installed.versionCode)'))

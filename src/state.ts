@@ -1,6 +1,7 @@
 import type { Network } from './services/network'
 import { averageMinutes } from './services/punctuality'
 import type { MonitorRuntime } from './services/punctuality'
+import type { IgTab } from './infographics'
 import type { ReleaseInfo } from './services/release-parser'
 import type { GeoPoint, PlanOutcome } from './services/routing'
 import type { ScheduleDataset, ServiceDayType, StopFeed } from './types'
@@ -46,15 +47,26 @@ export const ROUTE_PLANNER_ENABLED: boolean = false
 export type InfoSection = 'llegar' | 'lineas'
 
 /**
- * Los dos apartados de Ajustes.
+ * Paneles desplegables de Ajustes, por tema.
  *
- * Un ajuste que HACE algo (un interruptor, un permiso, un botón) y un panel que
- * solo CUENTA algo (cada cuánto se pide cada cosa, cuántas consultas van) no se
- * leen igual ni se buscan por lo mismo, y mezclados obligaban a recorrer nueve
- * tarjetas para encontrar el único interruptor que se venía a tocar. Se abre en
- * 'funciones' porque a Ajustes se entra a cambiar algo, no a leer.
+ * Antes eran dos apartados ("Funciones" e "Información"); ahora cada tema es
+ * un panel que se abre y se cierra por separado, y la lista plegada sirve de
+ * índice: se ve todo lo que hay sin recorrer nueve tarjetas para llegar al
+ * único interruptor que se venía a tocar.
  */
-export type SettingsSection = 'funciones' | 'informacion'
+export type SettingsPanel =
+  | 'avisos'
+  | 'apariencia'
+  | 'ubicacion'
+  | 'actualizaciones'
+  | 'experimental'
+  | 'ayuda'
+  | 'datos'
+  | 'registro'
+
+/** Tema de la interfaz: el del sistema, o uno fijo. */
+export type ThemePreference = 'system' | 'light' | 'dark'
+
 /**
  * Como se busca una parada.
  *
@@ -469,8 +481,17 @@ export interface AppState {
   /** La pestaña Info: qué apartado está abierto y qué línea se está mirando. */
   info: InfoState
 
-  /** Apartado abierto de Ajustes. No se guarda: cada visita empieza en funciones. */
-  settingsSection: SettingsSection
+  /** Paneles de Ajustes desplegados. No se guarda: cada visita empieza plegada. */
+  settingsOpen: SettingsPanel[]
+
+  /** Infografía que se está mirando en Ajustes > Ayuda. */
+  settingsHelpTab: IgTab
+
+  /**
+   * Ayuda de una sola pestaña abierta (el botón "?" de Tráfico e Info), o
+   * `null`. Es la misma infografía del tour, sin el resto del recorrido.
+   */
+  help: IgTab | null
 
   tour: TourState
 
@@ -646,12 +667,16 @@ export interface AppSettings {
    * cola de consultas— a lo que ya funciona.
    */
   experimentalMaps: boolean
+
+  /** Tema de la interfaz. Por defecto sigue al del sistema. */
+  theme: ThemePreference
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   vibrateOnApproach: true,
   trackingBusTarget: 1,
   experimentalMaps: false,
+  theme: 'system',
 }
 
 /* ------------------------------------------------------------------ *
@@ -682,7 +707,10 @@ const KEYS = {
   tracking: 'salbus.tracking',
   trackings: 'salbus.trackings',
   settings: 'salbus.settings',
+  /** Formato antiguo: la version cuyo tour se habia visto (uno por version). */
   tourVersion: 'salbus.tourVersion',
+  /** El tour de bienvenida ya se enseñó una vez a esta persona. */
+  tourSeen: 'salbus.tourSeen',
   monitors: 'salbus.monitors',
   monitorStats: 'salbus.monitorStats',
   monitorPasses: 'salbus.monitorPasses',
@@ -841,10 +869,13 @@ export const state: AppState = {
 
   info: emptyInfoState(),
 
-  settingsSection: 'funciones',
+  settingsOpen: [],
+  settingsHelpTab: 'inicio',
+  help: null,
 
-  // El tour se abre solo la primera vez que se arranca cada version nueva.
-  tour: { open: readTourVersion() !== APP_VERSION, step: 0 },
+  // El tour se abre solo UNA vez por persona, no una vez por version: quien ya
+  // lo ha visto lo tiene en Ajustes > Ayuda tantas veces como quiera.
+  tour: { open: !readTourSeen(), step: 0 },
 
   installed: { versionName: __APP_VERSION__, versionCode: APP_VERSION_CODE },
 
@@ -873,18 +904,27 @@ export function persistSettings(): void {
   writeJson(KEYS.settings, state.settings)
 }
 
-function readTourVersion(): string | null {
+/**
+ * ¿Se ha enseñado ya el tour?
+ *
+ * La clave NO depende de la version: el tour se abre solo una vez por persona.
+ * Quien vio un tour de versiones anteriores (la clave antigua, `tourVersion`)
+ * lo vera una vez mas, porque el de ahora cuenta otra app.
+ */
+function readTourSeen(): boolean {
   try {
-    return window.localStorage.getItem(KEYS.tourVersion)
+    return window.localStorage.getItem(KEYS.tourSeen) === '1'
   } catch {
-    return null
+    // Sin almacenamiento no se puede recordar: mejor no abrirlo en cada arranque.
+    return true
   }
 }
 
-/** Marca el tour de ESTA version como visto; volvera con la siguiente. */
+/** Da el tour por visto para siempre; desde Ajustes se puede volver a abrir. */
 export function markTourSeen(): void {
   try {
-    window.localStorage.setItem(KEYS.tourVersion, APP_VERSION)
+    window.localStorage.setItem(KEYS.tourSeen, '1')
+    window.localStorage.removeItem(KEYS.tourVersion)
   } catch {
     /* almacenamiento no disponible */
   }
@@ -1227,6 +1267,9 @@ function readSettings(): AppSettings {
   const settings = { ...DEFAULT_SETTINGS, ...stored }
   // Guardado por una version anterior (o a mano): se acota antes de usarlo.
   settings.trackingBusTarget = clampBusTarget(settings.trackingBusTarget)
+  if (settings.theme !== 'light' && settings.theme !== 'dark') {
+    settings.theme = 'system'
+  }
   // "Cómo llegar" deshabilitado: aunque se encendiera en una versión anterior,
   // aquí no puede quedar encendido (ni pedir ubicación, ni cargar el callejero).
   if (!ROUTE_PLANNER_ENABLED) {

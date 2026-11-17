@@ -17,7 +17,6 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { resolveVersion } from './version.mjs'
 
 const CHROME_CANDIDATES = [
   // Ruta explicita (p. ej. el Chromium de Playwright): CHROME=/ruta/chrome
@@ -31,13 +30,9 @@ const CHROME_CANDIDATES = [
 
 const require = createRequire(import.meta.url)
 /**
- * El tour se abre una vez por version: sin darlo por visto taparia cada captura.
- *
- * La version tiene que ser la MISMA que compila Vite (`resolveVersion`), no la de
- * package.json: no coinciden —la de Vite sale de las etiquetas de git— y con la
- * equivocada el tour se daba por no visto y se abria encima de cada pantalla.
+ * El tour se abre una sola vez por persona (clave `salbus.tourSeen`): sin darlo
+ * por visto taparia cada captura.
  */
-const appVersion = `v${resolveVersion().versionName}`
 
 const args = process.argv.slice(2)
 const url = valueOf('--url') ?? 'http://localhost:5177/'
@@ -160,7 +155,7 @@ async function main() {
       // la interfaz con datos normales.
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
         source: `
-          localStorage.setItem('salbus.tourVersion', '${appVersion}');
+          localStorage.setItem('salbus.tourSeen', '1');
           // Tres autobuses por aviso. No es un capricho: con el ajuste por
           // defecto (uno) el aviso sembrado TERMINA solo en cuanto pasa el
           // primer autobus, y la captura se encontraba la tarjeta ya retirada.

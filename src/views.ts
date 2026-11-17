@@ -45,7 +45,7 @@ import {
   type MonitorJob,
   type MonitorRow,
   type RoutePoint,
-  type SettingsSection,
+  type SettingsPanel,
   type TabId,
   type TrackingJob,
 } from './state'
@@ -57,6 +57,7 @@ import type {
   StopFeed,
   TransitLine,
 } from './types'
+import { IG_GUIDES, igGuide, renderInfographic, type IgTab } from './infographics'
 import { renderTrafficCutsNotice, renderTrafficCutsSection } from './traffic-view'
 import {
   arrivalTone,
@@ -308,6 +309,7 @@ export function renderApp(): string {
     </div>
     ${renderSheet()}
     ${renderTour()}
+    ${renderHelpDialog()}
     ${renderStopDialog()}
     ${renderUpdateDialog()}
     ${renderToast()}
@@ -2250,108 +2252,74 @@ function renderMonitorPasses(passes: Array<{ at: number, minutes: number }>): st
  * Tour de bienvenida                                                  *
  * ================================================================== */
 
-interface TourStep {
-  iconName: string
-  title: string
-  body: string
-}
-
 /**
- * Recorrido mínimo por las pestañas inferiores.
+ * Recorrido por la app: un paso por pestaña, cada uno con su infografía
+ * animada, y uno último con Ajustes y los dos permisos.
  *
- * Se abre solo la primera vez que se arranca cada versión: es el único momento
- * en que hay algo nuevo que contar, y termina en los permisos porque sin ellos
- * los avisos no funcionan y nada en la pantalla principal lo delata.
+ * Se abre solo una vez por persona (ver `markTourSeen`) y desde Ajustes > Ayuda
+ * las veces que se quiera. Termina en los permisos porque sin ellos el aviso de
+ * próximo bus no funciona con la pantalla apagada, y nada en la pantalla
+ * principal lo delata.
  */
-const TOUR: TourStep[] = [
-  {
-    iconName: 'home',
-    title: 'Inicio',
-    body: 'El reloj, tus seguimientos en marcha y tus paradas guardadas. Toca una parada para ver sus llegadas; los botones de abajo la renombran o la quitan.',
-  },
-  {
-    iconName: 'search',
-    title: 'Buscar',
-    body: 'Encuentra una parada por su nombre o su línea, por las que tienes más cerca, o tocándola en el mapa.',
-  },
-  {
-    iconName: 'bell',
-    title: 'Seguir',
-    body: 'El aviso de próximo bus: te dice los minutos que faltan, por cuántas paradas viene y te llega aunque cierres la app.',
-  },
-  {
-    iconName: 'warn',
-    title: 'Tráfico',
-    body: 'Los cortes de tráfico del Ayuntamiento, en curso y de los próximos días, con las líneas de autobús a las que afectan.',
-  },
-  {
-    iconName: 'info',
-    title: 'Info',
-    body: 'Los horarios oficiales de cada línea, por sentido y por día, con la primera salida, la última y los descansos señalados.',
-  },
-  {
-    iconName: 'settings',
-    title: 'Ajustes',
-    body: 'Desde el engranaje de arriba. En "Funciones", permisos, seguimiento y actualizaciones; en "Información", los ritmos de consulta y el registro.',
-  },
-  {
-    iconName: 'bell',
-    title: 'Permisos que hay que conceder',
-    body: 'Notificaciones, para que el aviso pueda mostrarse; y sin optimización de batería, para que siga actualizándose con la pantalla apagada.',
-  },
-]
+const TOUR_TABS: IgTab[] = IG_GUIDES.map((guide) => guide.tab)
 
 /** Pasos del tour; `main.ts` lo necesita para saber cuándo se ha acabado. */
-export const TOUR_STEPS = TOUR.length
+export const TOUR_STEPS = TOUR_TABS.length + 1
 
 function renderTour(): string {
   if (!state.tour.open || !state.ready) {
     return ''
   }
 
-  const index = Math.min(state.tour.step, TOUR.length - 1)
-  const step = TOUR[index]
-  const last = index === TOUR.length - 1
+  const index = Math.min(state.tour.step, TOUR_STEPS - 1)
+  const last = index === TOUR_STEPS - 1
+  const guide = last ? null : igGuide(TOUR_TABS[index])
+
+  const body = guide
+    ? `
+      <div class="tour-step" data-key="tour-step-${guide.tab}">
+        ${renderInfographic(guide.tab)}
+        <h3 id="tour-title">${esc(guide.label)}</h3>
+        <p>${esc(guide.summary)}</p>
+      </div>
+    `
+    : `
+      <div class="tour-step" data-key="tour-step-ajustes">
+        <div class="tour-icon">${icon('settings')}</div>
+        <h3 id="tour-title">Ajustes y permisos</h3>
+        <p>El engranaje de arriba abre Ajustes: avisos, apariencia, ubicación, actualizaciones y esta misma ayuda, con una animación por pestaña. Concede estos dos permisos para que el aviso siga funcionando con la pantalla apagada.</p>
+        <div class="tour-perms">
+          ${renderPermissionRow(
+            'Notificaciones',
+            'Permite mostrar el aviso con los minutos que faltan.',
+            state.permissions.notifications,
+            'request-notifications',
+          )}
+          ${renderPermissionRow(
+            'Sin optimización de batería',
+            'Evita que Android detenga las actualizaciones.',
+            state.permissions.battery,
+            'request-battery',
+          )}
+        </div>
+      </div>
+    `
 
   return `
     <div class="tour-backdrop"></div>
-    <section class="tour" role="dialog" aria-modal="true" aria-label="Novedades de SALBUS">
+    <section class="tour" role="dialog" aria-modal="true" aria-labelledby="tour-title">
       <header class="tour-head">
-        <span class="tour-badge">${esc(APP_VERSION)}</span>
+        <span class="tour-badge">Cómo se usa SALBUS · ${index + 1} de ${TOUR_STEPS}</span>
         <button class="mini-btn" type="button" data-action="tour-close" aria-label="Cerrar el tour">
           ${icon('close')}
         </button>
       </header>
 
-      <div class="tour-body">
-        <div class="tour-icon">${icon(step.iconName)}</div>
-        <h3>${esc(step.title)}</h3>
-        <p>${esc(step.body)}</p>
-      </div>
+      <div class="tour-body">${body}</div>
 
-      ${
-        last
-          ? `<div class="tour-perms">
-              ${renderPermissionRow(
-                'Notificaciones',
-                'Permite mostrar el aviso con los minutos que faltan.',
-                state.permissions.notifications,
-                'request-notifications',
-              )}
-              ${renderPermissionRow(
-                'Sin optimización de batería',
-                'Evita que Android detenga las actualizaciones.',
-                state.permissions.battery,
-                'request-battery',
-              )}
-            </div>`
-          : ''
-      }
-
-      <div class="tour-dots">
-        ${TOUR.map(
-          (_, position) =>
-            `<span class="tour-dot${position === index ? ' is-current' : ''}"></span>`,
+      <div class="tour-dots" aria-hidden="true">
+        ${Array.from({ length: TOUR_STEPS }, (_, position) =>
+          `<span class="tour-dot${position === index ? ' is-current' : ''}"></span>`,
         ).join('')}
       </div>
 
@@ -2363,6 +2331,38 @@ function renderTour(): string {
           ${last ? 'Empezar' : 'Siguiente'}
         </button>
       </div>
+    </section>
+  `
+}
+
+/**
+ * Ayuda de una sola pestaña: su infografía y dos frases, sin el resto del
+ * recorrido. La abre el botón "?" del encabezado de Tráfico e Info.
+ */
+function renderHelpDialog(): string {
+  if (!state.help || !state.ready || state.tour.open) {
+    return ''
+  }
+
+  const guide = igGuide(state.help)
+
+  return `
+    <button class="tour-backdrop" type="button" data-action="help-close" aria-label="Cerrar la ayuda"></button>
+    <section class="tour" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <header class="tour-head">
+        <span class="tour-badge">Ayuda</span>
+        <button class="mini-btn" type="button" data-action="help-close" aria-label="Cerrar la ayuda">
+          ${icon('close')}
+        </button>
+      </header>
+      <div class="tour-body">
+        <div class="tour-step" data-key="help-step-${guide.tab}">
+          ${renderInfographic(guide.tab)}
+          <h3 id="help-title">Cómo se usa ${esc(guide.label)}</h3>
+          <p>${esc(guide.summary)}</p>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block" type="button" data-action="help-close">Entendido</button>
     </section>
   `
 }
@@ -2396,6 +2396,7 @@ function renderInfo(): string {
     'clock',
     'Horarios de las líneas',
     'Salidas oficiales de cada línea, por sentido y por tipo de día.',
+    'info',
   )
 
   // Sin "Cómo llegar" no hay apartados que elegir: Info son los horarios.
@@ -2423,7 +2424,7 @@ function renderInfo(): string {
  * de Inicio ni un buscador arriba: sin él, la pantalla empezaba directamente
  * por una lista y no quedaba claro de qué era.
  */
-function renderTabHeader(iconName: string, title: string, subtitle: string): string {
+function renderTabHeader(iconName: string, title: string, subtitle: string, help?: IgTab): string {
   return `
     <header class="tab-header">
       <span class="tab-header-icon">${icon(iconName)}</span>
@@ -2431,6 +2432,11 @@ function renderTabHeader(iconName: string, title: string, subtitle: string): str
         <h2 class="tab-header-title">${esc(title)}</h2>
         <p class="tab-header-sub">${esc(subtitle)}</p>
       </div>
+      ${
+        help
+          ? `<button class="mini-btn tab-header-help" type="button" data-action="help-open" data-topic="${help}" aria-label="Cómo se usa ${esc(igGuide(help).label)}">${icon('help')}</button>`
+          : ''
+      }
     </header>
   `
 }
@@ -2445,6 +2451,7 @@ function renderTrafico(): string {
       'warn',
       'Cortes de tráfico',
       'Calles cortadas hoy y en los próximos días, y las líneas a las que afectan.',
+      'trafico',
     )}
     ${renderTrafficCutsSection()}
   `
@@ -3093,100 +3100,317 @@ export function formatWalk(minutes: number): string {
  * ================================================================== */
 
 /**
- * Ajustes, partido en dos apartados.
+ * Ajustes, en paneles desplegables por tema.
  *
- * La distinción no es temática sino de uso: hay paneles que HACEN algo —un
- * interruptor, un permiso, un botón que descarga una versión— y paneles que solo
- * CUENTAN algo —cada cuánto se pide cada cosa, cuántas consultas van, qué ha
- * pasado—. Mezclados obligaban a recorrer nueve tarjetas para llegar al único
- * interruptor que se venía a tocar, y los paneles de datos, que son largos, se
- * llevaban la mitad del recorrido sin que nadie los hubiera pedido.
- *
- * Se abre en "Funciones" porque a Ajustes se entra a cambiar algo. Lo que se
- * lee está a un toque, y ese toque solo lo da quien lo quiere.
+ * La lista plegada hace de índice: cada panel dice en su cabecera cómo está
+ * ahora lo suyo (permisos concedidos, tema, versión…), así que muchas visitas se
+ * resuelven sin abrir nada. Abrir uno no cierra los demás.
  */
+interface SettingsPanelDefinition {
+  id: SettingsPanel
+  iconName: string
+  title: string
+  summary: () => string
+  body: () => string
+}
+
+function settingsPanels(): SettingsPanelDefinition[] {
+  const panels: SettingsPanelDefinition[] = [
+    {
+      id: 'avisos',
+      iconName: 'bell',
+      title: 'Avisos y notificaciones',
+      summary: () => {
+        const granted = state.permissions.notifications === 'granted' && state.permissions.battery === 'granted'
+        const target = trackingBusTarget()
+        return `${granted ? 'Permisos concedidos' : 'Faltan permisos'} · ${
+          target === 1 ? 'solo el próximo bus' : `${target} autobuses por aviso`
+        }`
+      },
+      body: renderNotificationSettings,
+    },
+    {
+      id: 'apariencia',
+      iconName: 'sun',
+      title: 'Apariencia',
+      summary: () => (state.settings.theme === 'system' ? 'Como el teléfono' : `Tema ${THEME_LABELS[state.settings.theme].toLowerCase()}`),
+      body: renderAppearanceSettings,
+    },
+    {
+      id: 'ubicacion',
+      iconName: 'pin',
+      title: 'Ubicación y permisos',
+      summary: () =>
+        state.geo.blocked === 'permission'
+          ? 'SALBUS no tiene permiso de ubicación'
+          : state.geo.blocked === 'service'
+            ? 'La ubicación del teléfono está apagada'
+            : 'Para las paradas cercanas',
+      body: renderLocationSettings,
+    },
+    {
+      id: 'actualizaciones',
+      iconName: 'download',
+      title: 'Actualizaciones',
+      summary: () =>
+        state.update.release
+          ? `Disponible v${state.update.release.versionName}`
+          : `v${state.installed.versionName} · compilación ${state.installed.versionCode}`,
+      body: renderUpdateCard,
+    },
+  ]
+
+  if (ROUTE_PLANNER_ENABLED) {
+    panels.push({
+      id: 'experimental',
+      iconName: 'map',
+      title: 'Experimental',
+      summary: () => (state.settings.experimentalMaps ? 'Cómo llegar encendido' : 'En pruebas'),
+      body: renderExperimentalCard,
+    })
+  }
+
+  panels.push(
+    {
+      id: 'ayuda',
+      iconName: 'help',
+      title: 'Ayuda',
+      summary: () => 'El tour y una animación por pestaña',
+      body: renderHelpSettings,
+    },
+    {
+      id: 'datos',
+      iconName: 'chart',
+      title: 'Acerca de y datos',
+      summary: () => 'Origen de los datos, frecuencias y consultas',
+      body: renderSettingsFacts,
+    },
+    {
+      id: 'registro',
+      iconName: 'list',
+      title: 'Registro',
+      summary: () =>
+        state.logs.length === 0
+          ? 'Sin eventos'
+          : `${state.logs.length} ${state.logs.length === 1 ? 'evento' : 'eventos'}`,
+      body: renderLogSettings,
+    },
+  )
+
+  return panels
+}
+
+const THEME_LABELS: Record<'system' | 'light' | 'dark', string> = {
+  system: 'Sistema',
+  light: 'Claro',
+  dark: 'Oscuro',
+}
+
 function renderAjustes(): string {
   return `
-    <div class="segmented" role="tablist" aria-label="Apartados de ajustes">
-      ${renderSettingsSegment('funciones', 'Funciones', 'settings')}
-      ${renderSettingsSegment('informacion', 'Información', 'info')}
+    <div class="set-list">
+      ${settingsPanels().map(renderSettingsPanel).join('')}
     </div>
-
-    ${state.settingsSection === 'funciones' ? renderSettingsActions() : renderSettingsFacts()}
 
     <p class="text-tiny" style="text-align:center">SALBUS ${esc(APP_VERSION)}</p>
   `
 }
 
-function renderSettingsSegment(section: SettingsSection, label: string, iconName: string): string {
-  return `
-    <button
-      class="segmented-item"
-      type="button"
-      role="tab"
-      aria-selected="${state.settingsSection === section}"
-      data-action="settings-section"
-      data-section="${section}"
-    >${icon(iconName)}<span>${esc(label)}</span></button>
-  `
-}
+/**
+ * Un panel: cabecera que es un botón (`aria-expanded`) y región que se abre.
+ *
+ * La región no se quita del DOM al plegarse —así puede animarse la altura con
+ * grid-template-rows de 0fr a 1fr— pero queda `inert`: plegada no recibe foco
+ * ni la leen los lectores de pantalla.
+ */
+function renderSettingsPanel(panel: SettingsPanelDefinition): string {
+  const open = state.settingsOpen.includes(panel.id)
+  const headId = `set-${panel.id}-head`
+  const bodyId = `set-${panel.id}-body`
 
-/** Lo que se puede TOCAR: permisos, interruptores y la actualización. */
-function renderSettingsActions(): string {
   return `
-    <div class="screen-intro">
-      <h2>Funciones</h2>
-      <p>Permisos, comportamiento del seguimiento y actualizaciones.</p>
-    </div>
-
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Permisos</h3>
-        <p class="card-sub">Necesarios para los avisos en segundo plano</p>
-      </div></div>
-      <div class="card-body">
-        ${renderPermissionRow(
-          'Notificaciones',
-          'Permite mostrar el aviso persistente con los minutos que faltan.',
-          state.permissions.notifications,
-          'request-notifications',
-        )}
-        ${renderPermissionRow(
-          'Sin optimización de batería',
-          'Evita que Android detenga las actualizaciones con la pantalla apagada.',
-          state.permissions.battery,
-          'request-battery',
-        )}
+    <section class="set-panel${open ? ' is-open' : ''}" data-key="set-${panel.id}">
+      <h2 class="set-panel-h">
+        <button
+          class="set-panel-head"
+          type="button"
+          id="${headId}"
+          aria-expanded="${open}"
+          aria-controls="${bodyId}"
+          data-action="settings-panel"
+          data-panel="${panel.id}"
+        >
+          <span class="set-panel-icon">${icon(panel.iconName)}</span>
+          <span class="set-panel-copy">
+            <strong>${esc(panel.title)}</strong>
+            <span>${esc(panel.summary())}</span>
+          </span>
+          <span class="set-panel-chev">${icon('chevronDown')}</span>
+        </button>
+      </h2>
+      <div class="set-panel-body" id="${bodyId}" role="region" aria-labelledby="${headId}"${open ? '' : ' inert'}>
+        <div class="set-panel-clip">
+          <div class="set-panel-content">${panel.body()}</div>
+        </div>
       </div>
     </section>
-
-    ${renderTrackingRulesCard()}
-
-    ${ROUTE_PLANNER_ENABLED ? renderExperimentalCard() : ''}
-
-    ${renderUpdateCard()}
   `
 }
 
-/** Lo que solo se LEE: frecuencias, origen de los datos, cola y registro. */
+function renderNotificationSettings(): string {
+  return `
+    <div class="set-group">
+      ${renderPermissionRow(
+        'Notificaciones',
+        'Permite mostrar el aviso persistente con los minutos que faltan.',
+        state.permissions.notifications,
+        'request-notifications',
+      )}
+      ${renderPermissionRow(
+        'Sin optimización de batería',
+        'Evita que Android detenga las actualizaciones con la pantalla apagada.',
+        state.permissions.battery,
+        'request-battery',
+      )}
+    </div>
+    ${renderTrackingRulesCard()}
+  `
+}
+
+function renderAppearanceSettings(): string {
+  const current = state.settings.theme
+  const options: Array<['system' | 'light' | 'dark', string]> = [
+    ['system', 'phone'],
+    ['light', 'sun'],
+    ['dark', 'moon'],
+  ]
+
+  return `
+    <div class="segmented set-theme" role="radiogroup" aria-label="Tema">
+      ${options
+        .map(
+          ([value, iconName]) => `
+            <button
+              class="segmented-item"
+              type="button"
+              role="radio"
+              aria-checked="${value === current}"
+              aria-selected="${value === current}"
+              data-action="set-theme"
+              data-value="${value}"
+            >${icon(iconName)}<span>${esc(THEME_LABELS[value])}</span></button>
+          `,
+        )
+        .join('')}
+    </div>
+    <p class="text-tiny">
+      «Sistema» sigue al modo claro u oscuro del teléfono y cambia con él. La barra azul
+      de arriba es la misma en los dos temas.
+    </p>
+  `
+}
+
+function renderLocationSettings(): string {
+  return `
+    <div class="set-group">
+      <div class="perm-row">
+        <div class="perm-copy">
+          <strong>Ubicación del teléfono</strong>
+          <span>El interruptor general de Android. Sin él no se pueden buscar las paradas cercanas.</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" type="button" data-action="open-system-location">Abrir</button>
+      </div>
+      <div class="perm-row">
+        <div class="perm-copy">
+          <strong>Permisos de SALBUS</strong>
+          <span>Ubicación, notificaciones y demás permisos de la app, en los ajustes de Android.</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" type="button" data-action="open-app-settings">Abrir</button>
+      </div>
+    </div>
+    ${state.geo.error ? notice('warn', state.geo.error) : ''}
+    <p class="text-tiny">
+      La ubicación solo se usa en el momento de buscar paradas cercanas (en Inicio y en Buscar)
+      y nunca sale del teléfono.
+    </p>
+  `
+}
+
+/**
+ * Ayuda: el tour completo y, una a una, las infografías de cada pestaña. Solo
+ * se anima la elegida, y solo con el panel abierto.
+ */
+function renderHelpSettings(): string {
+  const open = state.settingsOpen.includes('ayuda')
+  const current = state.settingsHelpTab
+  const guide = igGuide(current)
+
+  return `
+    <button class="btn btn-primary btn-block" type="button" data-action="tour-open">
+      ${icon('play')} Ver el tour de la aplicación
+    </button>
+
+    <div class="set-help-tabs" role="group" aria-label="Animación de la pestaña">
+      ${IG_GUIDES.map(
+        (item) => `
+          <button
+            class="set-help-tab"
+            type="button"
+            aria-pressed="${item.tab === current}"
+            data-action="help-pick"
+            data-topic="${item.tab}"
+          >${icon(item.iconName)}<span>${esc(item.label)}</span></button>
+        `,
+      ).join('')}
+    </div>
+
+    <div class="set-help-view" data-key="set-help-${current}">
+      ${renderInfographic(current, !open)}
+      <p class="set-help-copy">${esc(guide.summary)}</p>
+    </div>
+  `
+}
+
+function renderLogSettings(): string {
+  return `
+    ${
+      state.logs.length === 0
+        ? '<p class="text-muted">Sin eventos registrados.</p>'
+        : `<div class="log-list">${state.logs
+            .slice(0, 60)
+            .map(
+              (entry) => `
+                <div class="log-item is-${entry.level}">
+                  <span class="log-time">${esc(formatClock(new Date(entry.at)))}</span>
+                  <span><span class="log-scope">${esc(entry.scope)}</span> · ${esc(entry.message)}</span>
+                </div>
+              `,
+            )
+            .join('')}</div>`
+    }
+    ${
+      state.logs.length === 0
+        ? ''
+        : `<button class="btn btn-secondary btn-sm set-inline-btn" type="button" data-action="clear-logs">${icon('trash')} Vaciar registro</button>`
+    }
+  `
+}
+
+/** Lo que solo se LEE: origen de los datos, consultas y frecuencias. */
 function renderSettingsFacts(): string {
   const health = getClientHealth()
   const network = state.network
 
   return `
-    <div class="screen-intro">
-      <h2>Información</h2>
-      <p>Cómo funciona por dentro: ritmos de consulta, origen de los datos y registro.</p>
-    </div>
+    <p class="text-tiny">
+      Cómo funciona por dentro: de dónde salen los datos, cada cuánto se piden y cuántas
+      consultas lleva la app.
+    </p>
 
-    ${renderRefreshRulesCard()}
-
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Origen de los datos</h3>
-        <p class="card-sub">Todo procede de Salamanca de Transportes</p>
-      </div></div>
-      <div class="card-body">
+    <section class="set-sub">
+      <h3 class="set-sub-title">Origen de los datos</h3>
+      <p class="set-sub-lead">Todo procede de Salamanca de Transportes</p>
+      <div class="set-sub-body">
         <dl class="kv">
           <dt>Llegadas en tiempo real</dt><dd>Web oficial</dd>
           <dt>Líneas y recorridos</dt><dd>${network?.lineCount ?? 0} líneas · ${network?.directionCount ?? 0} sentidos</dd>
@@ -3202,12 +3426,10 @@ function renderSettingsFacts(): string {
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Consultas a la fuente</h3>
-        <p class="card-sub">La app espacia las peticiones para no ser bloqueada</p>
-      </div></div>
-      <div class="card-body">
+    <section class="set-sub">
+      <h3 class="set-sub-title">Consultas a la fuente</h3>
+      <p class="set-sub-lead">La app espacia las peticiones para no ser bloqueada</p>
+      <div class="set-sub-body">
         <dl class="kv">
           <dt>Espaciado sostenido</dt><dd>${(health.spacingMs / 1000).toFixed(1)} s</dd>
           <dt>Consultas listas ya</dt><dd>${health.tokens}</dd>
@@ -3228,36 +3450,8 @@ function renderSettingsFacts(): string {
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-head">
-        <div class="card-head-copy">
-          <h3 class="card-title">Registro</h3>
-          <p class="card-sub">Últimos eventos de la aplicación</p>
-        </div>
-        <div class="card-actions">
-          <button class="mini-btn" type="button" data-action="clear-logs" aria-label="Vaciar registro">${icon(
-            'trash',
-          )}</button>
-        </div>
-      </div>
-      <div class="card-body">
-        ${
-          state.logs.length === 0
-            ? '<p class="text-muted">Sin eventos registrados.</p>'
-            : `<div class="log-list">${state.logs
-                .slice(0, 60)
-                .map(
-                  (entry) => `
-                    <div class="log-item is-${entry.level}">
-                      <span class="log-time">${esc(formatClock(new Date(entry.at)))}</span>
-                      <span><span class="log-scope">${esc(entry.scope)}</span> · ${esc(entry.message)}</span>
-                    </div>
-                  `,
-                )
-                .join('')}</div>`
-        }
-      </div>
-    </section>
+    ${renderRefreshRulesCard()}
+
   `
 }
 
@@ -3272,12 +3466,10 @@ function renderUpdateCard(): string {
   const message = update.manualMessage
 
   return `
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Actualizaciones</h3>
-        <p class="card-sub">Se publican solas en cada cambio del proyecto</p>
-      </div></div>
-      <div class="card-body">
+    <section class="set-sub">
+      <h3 class="set-sub-title">Versión de la app</h3>
+      <p class="set-sub-lead">Se publican solas en cada cambio del proyecto</p>
+      <div class="set-sub-body">
         <dl class="kv">
           <dt>Versión instalada</dt><dd>v${esc(state.installed.versionName)} · compilación ${state.installed.versionCode}</dd>
           <dt>Instalar apps desconocidas</dt><dd>${update.canInstall ? 'concedido' : 'sin conceder'}</dd>
@@ -3300,6 +3492,10 @@ function renderUpdateCard(): string {
         <p class="text-tiny">
           Android no permite que una aplicación se instale sola: SALBUS comprueba, descarga y prepara
           la versión nueva, y el último paso lo confirmas tú en el diálogo del sistema.
+        </p>
+        <p class="text-tiny">
+          Cada versión nueva se ofrece seis horas después de publicarse: antes de eso la app
+          sigue diciendo que está al día y no descarga nada.
         </p>
       </div>
     </section>
@@ -3362,12 +3558,10 @@ function renderRefreshRulesCard(): string {
   ]
 
   return `
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Frecuencias de actualización</h3>
-        <p class="card-sub">Cada cuánto se pide cada cosa, y con qué condición</p>
-      </div></div>
-      <div class="card-body">
+    <section class="set-sub">
+      <h3 class="set-sub-title">Frecuencias de actualización</h3>
+      <p class="set-sub-lead">Cada cuánto se pide cada cosa, y con qué condición</p>
+      <div class="set-sub-body">
         <div class="rule-list">
           ${rows
             .map(
@@ -3412,12 +3606,10 @@ function renderRefreshRulesCard(): string {
  */
 function renderTrackingRulesCard(): string {
   return `
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Seguimiento</h3>
-        <p class="card-sub">Cuántas funciones puedes tener y cuántas trabajan a la vez</p>
-      </div></div>
-      <div class="card-body">
+    <section class="set-sub">
+      <h3 class="set-sub-title">Seguimiento</h3>
+      <p class="set-sub-lead">Cuántas funciones puedes tener y cuántas trabajan a la vez</p>
+      <div class="set-sub-body">
         <label class="field">
           <span>Autobuses por aviso</span>
           <select class="select" data-action="pick-bus-target">
@@ -3459,10 +3651,6 @@ function renderTrackingRulesCard(): string {
           state.settings.vibrateOnApproach,
           'toggle-vibration',
         )}
-
-        <button class="btn btn-secondary btn-block" type="button" data-action="tour-open">
-          ${icon('info')} Ver el tour de la aplicación
-        </button>
       </div>
     </section>
   `
@@ -3477,12 +3665,10 @@ function renderTrackingRulesCard(): string {
  */
 function renderExperimentalCard(): string {
   return `
-    <section class="card">
-      <div class="card-head"><div class="card-head-copy">
-        <h3 class="card-title">Experimental</h3>
-        <p class="card-sub">En pruebas: puede cambiar o desaparecer</p>
-      </div></div>
-      <div class="card-body">
+    <section class="set-sub">
+      <h3 class="set-sub-title">Experimental</h3>
+      <p class="set-sub-lead">En pruebas: puede cambiar o desaparecer</p>
+      <div class="set-sub-body">
         ${renderSettingRow(
           'map',
           'Cómo llegar',

@@ -80,7 +80,7 @@ import {
   type MonitorJob,
   type RoutePoint,
   type InfoSection,
-  type SettingsSection,
+  type SettingsPanel,
   type TabId,
   type TrackingJob,
   type SearchMode,
@@ -88,6 +88,7 @@ import {
 import type { NetworkStop, StopFeed } from './types'
 import { patch } from './dom'
 import { initTrafficCuts, refreshTrafficCuts, toggleTrafficCutsPanel } from './traffic-view'
+import { isIgTab } from './infographics'
 import { esc, liveMinutes, readableTextColor } from './ui'
 import {
   describeArrival,
@@ -2838,6 +2839,7 @@ function paint(): void {
   // reescribía todo el HTML cada segundo, y eso cerraba cualquier desplegable
   // abierto (el elemento sobre el que el sistema lo había desplegado dejaba de
   // existir), además de perder foco, cursor y desplazamiento.
+  applyTheme()
   patch(appRoot, renderApp())
   syncMap()
   // Solo hace algo cuando la pestaña experimental está abierta; en cualquier
@@ -3281,14 +3283,69 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       return
     }
 
-    case 'settings-section': {
-      const section = element.dataset.section as SettingsSection | undefined
-      if (section) {
-        state.settingsSection = section
+    // Ajustes: cada panel se abre y se cierra por su cuenta.
+    case 'settings-panel': {
+      const panel = element.dataset.panel as SettingsPanel | undefined
+      if (panel) {
+        state.settingsOpen = state.settingsOpen.includes(panel)
+          ? state.settingsOpen.filter((item) => item !== panel)
+          : [...state.settingsOpen, panel]
         render()
       }
       return
     }
+
+    case 'set-theme': {
+      const value = element.dataset.value
+      if (value === 'system' || value === 'light' || value === 'dark') {
+        state.settings.theme = value
+        persistSettings()
+        applyTheme()
+        render()
+      }
+      return
+    }
+
+    // La infografía que se mira en Ajustes > Ayuda.
+    case 'help-pick': {
+      const topic = element.dataset.topic
+      if (isIgTab(topic)) {
+        state.settingsHelpTab = topic
+        render()
+      }
+      return
+    }
+
+    // El botón "?" de Tráfico e Info: la infografía de esa pestaña sola.
+    case 'help-open': {
+      const topic = element.dataset.topic
+      if (isIgTab(topic)) {
+        state.help = topic
+        render()
+      }
+      return
+    }
+
+    case 'help-close':
+      state.help = null
+      render()
+      return
+
+    case 'open-system-location':
+      try {
+        await DeviceSettings.openLocationSettings()
+      } catch (error) {
+        showToast(errorMessage(error), 'error')
+      }
+      return
+
+    case 'open-app-settings':
+      try {
+        await DeviceSettings.openAppSettings()
+      } catch (error) {
+        showToast(errorMessage(error), 'error')
+      }
+      return
 
     case 'locate':
       // "Ya está activada, buscar paradas": se vuelve a preguntar al sistema
@@ -3424,6 +3481,7 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
       return
 
     case 'tour-open':
+      state.help = null
       state.tour = { open: true, step: 0 }
       render()
       return
@@ -3595,8 +3653,26 @@ function defaultDirectionKey(
 }
 
 /**
- * Cierra el tour y lo da por visto para ESTA version. Volvera a aparecer solo
- * cuando la app se actualice, que es cuando hay algo nuevo que contar.
+ * Tema elegido en Ajustes > Apariencia. «Del sistema» quita el atributo y deja
+ * que mande `prefers-color-scheme`; claro u oscuro lo fijan en `<html>`, que es
+ * de donde style.css toma los colores.
+ */
+function applyTheme(): void {
+  const root = document.documentElement
+  const theme = state.settings.theme
+
+  if (theme === 'light' || theme === 'dark') {
+    if (root.dataset.theme !== theme) {
+      root.dataset.theme = theme
+    }
+  } else if (root.hasAttribute('data-theme')) {
+    root.removeAttribute('data-theme')
+  }
+}
+
+/**
+ * Cierra el tour y lo da por visto para siempre: no vuelve a abrirse solo, ni
+ * con las versiones nuevas. Desde Ajustes > Ayuda se abre cuando se quiera.
  */
 function closeTour(): void {
   state.tour = { open: false, step: 0 }

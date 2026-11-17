@@ -2714,6 +2714,329 @@ button.card-head {
   background: var(--brand-600);
 }
 
+/* Cada paso entra con un desliz corto; la infografía empieza su bucle desde
+   el principio porque el paso es un nodo nuevo (data-key distinto). */
+.tour-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  animation: tour-step-in 0.24s cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.tour-step .ig {
+  margin-bottom: 4px;
+}
+
+.tour-step .tour-perms {
+  width: 100%;
+  text-align: left;
+}
+
+@keyframes tour-step-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+button.tour-backdrop {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* Ayuda de pestaña: el "?" del encabezado de Tráfico e Info. */
+.tab-header-help {
+  margin-left: auto;
+  align-self: flex-start;
+  border-radius: var(--r-full);
+}
+
+/* ==================================================================
+   Ajustes: paneles desplegables
+   ==================================================================
+   La altura se anima con grid-template-rows de 0fr a 1fr (sin medir
+   nada en JS); el contenido entra con opacidad y un desplazamiento de
+   4 px. 260 ms al abrir, más corto al cerrar: lo que se va no se mira. */
+
+.set-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.set-panel {
+  --set-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.set-panel.is-open {
+  border-color: var(--border-strong);
+}
+
+.set-panel-h {
+  margin: 0;
+  font: inherit;
+}
+
+.set-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s ease;
+}
+
+.set-panel-head:active {
+  background: var(--surface-2);
+}
+
+.set-panel-head:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: -2px;
+  border-radius: var(--r-lg);
+}
+
+.set-panel-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: var(--info-soft);
+  color: var(--brand-500);
+}
+
+.set-panel-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.set-panel-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.set-panel-copy strong {
+  font-size: 15.5px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.set-panel-copy span {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.3;
+}
+
+.set-panel-chev {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-3);
+  transition: transform 0.26s var(--set-ease);
+}
+
+.set-panel-chev svg {
+  width: 20px;
+  height: 20px;
+}
+
+.set-panel.is-open .set-panel-chev {
+  transform: rotate(180deg);
+}
+
+.set-panel-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s var(--set-ease);
+}
+
+.set-panel.is-open .set-panel-body {
+  grid-template-rows: 1fr;
+  transition-duration: 0.28s;
+}
+
+.set-panel-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.set-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 16px 16px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+}
+
+.set-panel.is-open .set-panel-content {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.22s var(--set-ease) 0.06s, transform 0.26s var(--set-ease) 0.06s;
+}
+
+.set-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.set-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.set-panel-content > .set-sub:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.set-sub-title {
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.set-sub-lead {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.set-sub-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.set-theme .segmented-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.set-theme .segmented-item svg {
+  width: 17px;
+  height: 17px;
+}
+
+.set-inline-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-inline-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Elegir la pestaña cuya animación se ve. Cinco botones iguales en una fila
+   que cabe en 320 px: icono encima, nombre debajo, como la barra inferior. */
+.set-help-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+}
+
+.set-help-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.set-help-tab svg {
+  width: 19px;
+  height: 19px;
+}
+
+.set-help-tab[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--brand-600);
+  box-shadow: var(--shadow-1);
+}
+
+.set-help-tab:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 1px;
+}
+
+.set-help-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: fade-in 0.2s ease-out both;
+}
+
+.set-help-copy {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .set-panel-body,
+  .set-panel-content,
+  .set-panel-chev,
+  .tour-step,
+  .set-help-view {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .set-panel.is-open .set-panel-content {
+    transition: none;
+  }
+}
+
 
 
 /* ==================================================================

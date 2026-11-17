@@ -1,8 +1,8 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
-import { isNewer, readRelease, type GitHubRelease, type ReleaseInfo } from './release-parser'
+import { isNewer, isReleaseMature, readRelease, type GitHubRelease, type ReleaseInfo } from './release-parser'
 
-export { isNewer, parseTag, readRelease } from './release-parser'
+export { isNewer, isReleaseMature, parseTag, readRelease, RELEASE_GRACE_MS } from './release-parser'
 export type { ReleaseInfo } from './release-parser'
 
 /**
@@ -145,6 +145,12 @@ export async function checkForUpdate(): Promise<CheckOutcome> {
     const installed = await readInstalledVersion()
 
     if (!isNewer(release, installed.versionCode)) {
+      return { status: 'current', versionCode: installed.versionCode }
+    }
+
+    // Recien publicada: durante sus primeras seis horas no se ofrece ni se
+    // descarga, se responde como si no hubiera novedad. Ver RELEASE_GRACE_MS.
+    if (!isReleaseMature(release)) {
       return { status: 'current', versionCode: installed.versionCode }
     }
 

@@ -73,3 +73,49 @@ export function readRelease(payload: GitHubRelease | null | undefined): ReleaseI
 export function isNewer(release: ReleaseInfo, installedVersionCode: number): boolean {
   return release.versionCode > installedVersionCode
 }
+
+/**
+ * Espera desde que se publica una release hasta que se ofrece.
+ *
+ * Una version recien publicada no se ofrece al momento: durante las primeras
+ * seis horas se trata como si no existiera ("ya tienes la ultima") y no se
+ * descarga nada. Da margen para retirar o corregir una publicacion con un fallo
+ * antes de que llegue a los moviles, y evita que dos publicaciones seguidas
+ * obliguen a instalar dos veces en una tarde.
+ */
+export const RELEASE_GRACE_MS = 6 * 60 * 60 * 1000
+
+/**
+ * ¿Han pasado ya las seis horas desde que se publico?
+ *
+ * Sin fecha de publicacion (GitHub siempre la manda en una release publicada,
+ * asi que solo puede venir de una respuesta rara) no se retiene: bloquear para
+ * siempre una version por un dato ausente es peor que ofrecerla. Una fecha
+ * ilegible tampoco. Una fecha en el futuro —reloj del movil atrasado— cuenta
+ * como recien publicada, que es lo prudente.
+ */
+export function isReleaseMature(
+  release: Pick<ReleaseInfo, 'publishedAt'>,
+  now: number = Date.now(),
+  graceMs: number = RELEASE_GRACE_MS,
+): boolean {
+  if (!release.publishedAt) {
+    return true
+  }
+
+  const published = Date.parse(release.publishedAt)
+  if (!Number.isFinite(published)) {
+    return true
+  }
+
+  return now - published >= graceMs
+}
+
+/** Lo que dice la comprobacion: solo se ofrece lo mas nuevo Y ya asentado. */
+export function shouldOffer(
+  release: ReleaseInfo,
+  installedVersionCode: number,
+  now: number = Date.now(),
+): boolean {
+  return isNewer(release, installedVersionCode) && isReleaseMature(release, now)
+}
