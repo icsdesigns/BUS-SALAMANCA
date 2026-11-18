@@ -394,6 +394,16 @@ si hay que volver a colocar los marcadores— y acercar el mapa cambia la segund
 sin tocar la primera. El encuadre entra en la firma redondeado, o cada fotograma
 de una inercia contaría como un encuadre nuevo.
 
+Volver a colocar los marcadores **no es borrar y dibujar de nuevo**: se
+reconcilia (`services/map-layers.ts`). Lo que sigue igual no se toca, lo que
+solo cambia de aspecto (la parada elegida, su número en «Cerca») cambia de
+icono en su sitio, y el marcador con el globo abierto no se quita aunque el
+encuadre lo deje fuera; se va cuando se cierra el globo. Antes se hacía
+`clearLayers()`, y quitar un marcador cierra su globo: el globo, al abrirse,
+desplaza el mapa para caber, ese desplazamiento repintaba y el cartel de la
+parada desaparecía nada más salir. Por lo mismo «estás aquí» va en su propia
+capa: una lectura nueva del GPS no toca las paradas.
+
 
 Al abrir el globo de una parada **se lanza ya la consulta de sus tiempos**, antes
 de pulsar «Ver tiempos». Quien abre el globo casi siempre acaba pulsando el

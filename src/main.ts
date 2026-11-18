@@ -27,6 +27,13 @@ import {
 } from './services/routing'
 import { loadStreetGraph, peekStreetGraph, walkPath } from './services/streets'
 import { currentDayType } from './services/schedule'
+import {
+  type DrawnLayer,
+  type LayerOps,
+  reconcileLayers,
+  sweepOrphanLayers,
+  type WantedLayer,
+} from './services/map-layers'
 import { checkForNewFeed, loadBestSchedule } from './services/gtfs-feed'
 import { onWidgetStopTap, syncWidgetStops, takeWidgetStop } from './services/widget'
 import {
@@ -418,6 +425,29 @@ let mapSignature = ''
  * marcadores. Acercar el mapa cambia lo segundo sin tocar lo primero.
  */
 let mapPaintKey = ''
+/**
+ * "Estás aquí" del buscador, en su propia capa.
+ *
+ * Se rehace entero con cada lectura del GPS, y por eso NO comparte capa con las
+ * paradas: si lo hiciera, cada lectura nueva arrastraría con ella todos los
+ * marcadores, y con ellos el globo que la persona tuviera abierto.
+ */
+let mapMeLayer: L.LayerGroup | null = null
+/** Posición con la que se pintó `mapMeLayer` por última vez. */
+let mapMeKey = ''
+/**
+ * Lo que hay dibujado ahora mismo en `mapLayer`, por identidad.
+ *
+ * El mapa NO se borra y se vuelve a dibujar en cada repintado: se reconcilia
+ * (`reconcileMapLayer`). Borrarlo entero quitaba también el marcador cuyo globo
+ * estaba abierto, y Leaflet cierra el globo de un marcador al quitarlo; el
+ * propio globo, al abrirse, desplaza el mapa para caber (`autoPan`), ese
+ * desplazamiento repintaba, y el cartel de la parada desaparecía nada más
+ * salir. Era el fallo de "el cartel se va solo y no se puede pulsar".
+ */
+const mapItems = new Map<string, DrawnLayer<L.Layer>>()
+/** De qué es el dibujo actual: la red, un recorrido o "Cerca". Cambiarlo empieza de cero. */
+let mapItemsScope = ''
 
 /* ------------------------------------------------------------------ *
  * Arranque                                                             *
@@ -3169,6 +3199,12 @@ async function handleAction(action: string, element: HTMLElement): Promise<void>
     // por encima, asi que no hay que salir de la pantalla completa para verla.
     case 'map-select-stop':
     case 'select-stop':
+      // El globo ya ha cumplido: la ficha se abre encima. Antes se cerraba de
+      // rebote, porque repintar el mapa quitaba el marcador; ahora el marcador
+      // se conserva y hay que cerrarlo a proposito.
+      if (action === 'map-select-stop') {
+        map?.closePopup()
+      }
       // La vista compacta es la predeterminada y se REFUERZA: haber desplegado
       // las llegadas de una parada no deja desplegada la siguiente que se abra.
       state.arrivalsExpandedStopId = null
@@ -3831,6 +3867,7 @@ function syncMap(): void {
       map.remove()
       map = null
       mapLayer = null
+      resetMapDrawing()
       mapSignature = ''
       mapPaintKey = ''
     }
@@ -3854,6 +3891,14 @@ function syncMap(): void {
       attribution: '&copy; OpenStreetMap',
     }).addTo(map)
     mapLayer = L.layerGroup().addTo(map)
+    mapMeLayer = L.layerGroup().addTo(map)
+    resetMapDrawing()
+    // Un marcador que se quedó dibujado solo porque su globo estaba abierto se
+    // quita en cuanto el globo se cierra. Se deja para despues del evento: en
+    // pleno cierre Leaflet aun esta desmontando el globo de ese marcador.
+    map.on('popupclose', () => {
+      void Promise.resolve().then(sweepClosedOrphans)
+    })
     mapSignature = ''
     mapPaintKey = ''
   }
@@ -3961,20 +4006,25 @@ function paintNearbyMarkers(): void {
       : ''
   }`
 
+  paintMapMe()
+
   if (key === mapPaintKey) {
     return
   }
 
   mapPaintKey = key
-  mapLayer.clearLayers()
-  paintYouAreHere(mapLayer, [])
 
-  nearestStopsForView().forEach((entry, index) => {
+  // Con cada lectura del GPS cambia QUE paradas son las ocho de al lado y en
+  // que orden van, pero se reconcilian una a una: la que sigue en la lista
+  // conserva su marcador, y con el su globo si estaba abierto.
+  const items: MapItem[] = nearestStopsForView().map((entry, index) => {
     const stop = entry.stop
     const selected = state.search.selectedStopId === stop.stopId
 
-    const marker = L.marker([stop.lat, stop.lon], {
-      icon: L.divIcon({
+    return {
+      id: `cerca:${stop.stopId}`,
+      sig: `${index}|${selected ? 1 : 0}`,
+      create: () => stopMarker(stop, L.divIcon({
         className: '',
         html: `<span class="map-near${index === 0 ? ' is-first' : ''}${
           selected ? ' is-selected' : ''
@@ -3982,24 +4032,118 @@ function paintNearbyMarkers(): void {
         iconSize: [32, 32],
         iconAnchor: [16, 16],
         popupAnchor: [0, -16],
-      }),
-      keyboard: false,
-      zIndexOffset: selected ? 1000 : 100 - index,
-    })
-
-    marker.bindPopup(buildStopPopup(stop), {
-      className: 'map-popup',
-      closeButton: true,
-      maxWidth: 260,
-      minWidth: 200,
-      autoPanPadding: [16, 16],
-    })
-
-    // Igual que en el mapa de la red: abrir el globo ya adelanta la consulta,
-    // porque quien lo abre casi siempre acaba pulsando "Ver tiempos".
-    marker.on('popupopen', () => prefetchStop(stop.stopId))
-    marker.addTo(mapLayer as L.LayerGroup)
+      }), selected ? 1000 : 100 - index),
+    }
   })
+
+  reconcileMapLayer('cerca', items)
+}
+
+/* ---- Dibujo reconciliado del mapa del buscador ---- */
+
+type MapItem = WantedLayer<L.Layer>
+
+/** Cómo se aplica la reconciliación (`services/map-layers.ts`) sobre Leaflet. */
+const mapLayerOps: LayerOps<L.Layer> = {
+  add: (layer) => {
+    mapLayer?.addLayer(layer)
+  },
+  remove: (layer) => {
+    mapLayer?.removeLayer(layer)
+  },
+  isOpen: (layer) => layer.isPopupOpen?.() === true,
+  // Un marcador que solo cambia de aspecto cambia de icono SIN quitarse del
+  // mapa: quitarlo cerraría el globo que tuviera abierto.
+  restyle: (current, next) => {
+    if (!(current instanceof L.Marker) || !(next instanceof L.Marker)) {
+      return false
+    }
+    const icon = next.options.icon
+    if (icon) {
+      current.setIcon(icon)
+    }
+    current.setZIndexOffset(next.options.zIndexOffset ?? 0)
+    current.setLatLng(next.getLatLng())
+    return true
+  },
+}
+
+/** Vacía el registro de piezas dibujadas (el mapa se acaba de crear o destruir). */
+function resetMapDrawing(): void {
+  mapItems.clear()
+  mapItemsScope = ''
+  mapMeKey = ''
+}
+
+/**
+ * Lleva `mapLayer` a lo que dice `items` tocando solo lo que cambia (ver
+ * `reconcileLayers`).
+ *
+ * `scope` es de qué es el dibujo (la red, un recorrido, "Cerca"). Cambiar de
+ * uno a otro sí empieza de cero: es otra pantalla, y un globo de la anterior
+ * no pinta nada en ella.
+ */
+function reconcileMapLayer(scope: string, items: MapItem[]): void {
+  if (!mapLayer) {
+    return
+  }
+
+  if (scope !== mapItemsScope) {
+    mapLayer.clearLayers()
+    mapItems.clear()
+    mapItemsScope = scope
+  }
+
+  reconcileLayers(mapItems, items, mapLayerOps)
+}
+
+/** Quita los marcadores que solo seguían ahí por tener el globo abierto. */
+function sweepClosedOrphans(): void {
+  sweepOrphanLayers(mapItems, mapLayerOps)
+}
+
+/** "Estás aquí" del buscador: solo se rehace cuando el GPS da otra posición. */
+function paintMapMe(): void {
+  if (!mapMeLayer) {
+    return
+  }
+
+  const location = state.geo.location
+  const key = location
+    ? `${location.point.lat.toFixed(5)},${location.point.lon.toFixed(5)},${Math.round(location.accuracy)}`
+    : ''
+
+  if (key === mapMeKey) {
+    return
+  }
+
+  mapMeKey = key
+  mapMeLayer.clearLayers()
+  paintYouAreHere(mapMeLayer, [])
+}
+
+/** Marcador de una parada con su globo. Es el mismo en la red, en un recorrido y en "Cerca". */
+function stopMarker(stop: NetworkStop, icon: L.DivIcon, zIndexOffset: number): L.Marker {
+  const marker = L.marker([stop.lat, stop.lon], { icon, keyboard: false, zIndexOffset })
+
+  marker.bindPopup(buildStopPopup(stop), {
+    className: 'map-popup',
+    closeButton: true,
+    maxWidth: 260,
+    minWidth: 200,
+    autoPanPadding: [16, 16],
+    // Arriba flota el boton "Ampliar" (o el titulo, a pantalla completa): el
+    // globo se coloca por debajo para que no le tape el nombre de la parada.
+    autoPanPaddingTopLeft: [16, 64],
+  })
+
+  // Abrir el globo YA lanza la consulta de tiempos. Quien lo abre casi siempre
+  // acaba pulsando "Ver tiempos", y esa consulta tarda lo suyo: la fuente no
+  // admite mas de una peticion cada dos segundos. Adelantandola aqui, para
+  // cuando se pulsa el boton el dato suele estar puesto.
+  marker.on('popupopen', () => prefetchStop(stop.stopId))
+
+  return marker
 }
 
 /** Encuadre redondeado a tres decimales (~100 m): sirve de firma sin repintar por nada. */
@@ -4039,6 +4183,8 @@ function paintStopMarkers(): void {
     return
   }
 
+  paintMapMe()
+
   const direction = state.network.directionByKey.get(state.search.directionKey)
   const showingAll = !direction
   const zoom = map.getZoom()
@@ -4059,7 +4205,8 @@ function paintStopMarkers(): void {
   // porque el numero de orden ES la informacion. Sin recorrido, lo que decide
   // el dibujo es el nivel de acercamiento.
   const grouping = showingAll && zoom < CLUSTER_MAX_ZOOM
-  const here = state.geo.location?.point
+  // "Estás aquí" va en su propia capa (`paintMapMe`) y ya no entra en la firma:
+  // una lectura nueva del GPS no tiene por que tocar las paradas.
   const key = [
     state.search.directionKey || 'todas',
     state.search.selectedStopId ?? '',
@@ -4068,10 +4215,6 @@ function paintStopMarkers(): void {
     // redondeado: sin eso, cada fotograma de una inercia contaria como un
     // encuadre nuevo y se repintaria el mapa decenas de veces por gesto.
     showingAll ? viewKey(view) : '',
-    // El punto de "estás aquí" se afina con cada lectura del GPS: si no entrara
-    // en la firma se quedaria clavado donde cayo la primera, que suele ser la
-    // peor de todas.
-    here ? `${here.lat.toFixed(5)},${here.lon.toFixed(5)}` : '',
   ].join('|')
 
   if (key === mapPaintKey) {
@@ -4079,17 +4222,16 @@ function paintStopMarkers(): void {
   }
 
   mapPaintKey = key
-  mapLayer.clearLayers()
-
-  paintYouAreHere(mapLayer, [])
+  const scope = showingAll ? 'red' : `ruta:${direction.key}`
 
   if (grouping) {
-    paintStopClusters(stops, zoom)
+    reconcileMapLayer(scope, stopClusterItems(stops, zoom))
     return
   }
 
   const color = state.network.getLineColor(direction?.key.split('|')[0] ?? '')
   const points: Array<[number, number]> = []
+  const items: MapItem[] = []
 
   stops.forEach((stop, index) => {
     if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lon)) {
@@ -4098,38 +4240,35 @@ function paintStopMarkers(): void {
 
     points.push([stop.lat, stop.lon])
     const selected = state.search.selectedStopId === stop.stopId
+    const order = showingAll ? null : index + 1
 
     // Marcador con icono propio en lugar de un circulo de 6 px: en un movil hay
     // que poder verlo y acertarle con el dedo sin ampliar el mapa. Sin recorrido
     // elegido no hay "numero de orden" que poner, asi que van sin numero.
-    const marker = L.marker([stop.lat, stop.lon], {
-      icon: buildStopIcon(stop.stopId, showingAll ? null : index + 1, color, selected),
-      keyboard: false,
-      zIndexOffset: selected ? 1000 : 0,
+    items.push({
+      // En un recorrido la identidad es la posicion: una linea circular puede
+      // pasar dos veces por la misma parada, y son dos chinchetas distintas.
+      id: showingAll ? `parada:${stop.stopId}` : `orden:${index}:${stop.stopId}`,
+      sig: `${order ?? ''}|${color}|${selected ? 1 : 0}`,
+      create: () => stopMarker(
+        stop,
+        buildStopIcon(stop.stopId, order, color, selected),
+        selected ? 1000 : 0,
+      ),
     })
-
-    marker.bindPopup(buildStopPopup(stop), {
-      className: 'map-popup',
-      closeButton: true,
-      maxWidth: 260,
-      minWidth: 200,
-      autoPanPadding: [16, 16],
-    })
-
-    // Abrir el globo YA lanza la consulta de tiempos. Quien lo abre casi siempre
-    // acaba pulsando "Ver tiempos", y esa consulta tarda lo suyo: la fuente no
-    // admite mas de una peticion cada dos segundos. Adelantandola aqui, para
-    // cuando se pulsa el boton el dato suele estar puesto.
-    marker.on('popupopen', () => prefetchStop(stop.stopId))
-
-    marker.addTo(mapLayer as L.LayerGroup)
   })
 
   // El trazado une las paradas en el orden real del trayecto. Sin recorrido
   // elegido no hay orden que unir: las paradas de la red no son una linea.
   if (!showingAll && points.length > 1) {
-    L.polyline(points, { color, weight: 5, opacity: 0.7 }).addTo(mapLayer)
+    items.push({
+      id: 'trazado',
+      sig: color,
+      create: () => L.polyline(points, { color, weight: 5, opacity: 0.7 }),
+    })
   }
+
+  reconcileMapLayer(scope, items)
 }
 
 /**
@@ -4145,11 +4284,7 @@ function paintStopMarkers(): void {
  * van partiendo solos hasta que, ya cerca, las paradas salen una a una. Tocar
  * un grupo hace lo mismo de golpe: encuadra lo que tiene dentro.
  */
-function paintStopClusters(stops: NetworkStop[], zoom: number): void {
-  if (!map || !mapLayer) {
-    return
-  }
-
+function stopClusterItems(stops: NetworkStop[], zoom: number): MapItem[] {
   // Grados de longitud por casilla. El mundo son 360º repartidos en 2^zoom
   // teselas, y se toma un cuarto de tesela: a zoom 13 son unos 900 m, que es la
   // distancia a la que dos paradas dejan de distinguirse en pantalla.
@@ -4173,27 +4308,21 @@ function paintStopClusters(stops: NetworkStop[], zoom: number): void {
     cells.set(key, cell)
   }
 
-  for (const cell of cells.values()) {
+  const items: MapItem[] = []
+  const color = state.network?.getLineColor('') ?? '#1f6feb'
+
+  for (const [cellKey, cell] of cells) {
     // Un grupo de una sola parada no es un grupo: se dibuja la parada, que ya
-    // se puede tocar y abrir sin tener que acercarse mas.
+    // se puede tocar y abrir sin tener que acercarse mas. Lleva el mismo id que
+    // la parada suelta, asi que al acercarse sigue siendo el mismo marcador.
     if (cell.stops.length === 1) {
       const stop = cell.stops[0]
       const selected = state.search.selectedStopId === stop.stopId
-      const marker = L.marker([stop.lat, stop.lon], {
-        icon: buildStopIcon(stop.stopId, null, state.network?.getLineColor('') ?? '#1f6feb', selected),
-        keyboard: false,
-        zIndexOffset: selected ? 1000 : 0,
+      items.push({
+        id: `parada:${stop.stopId}`,
+        sig: `|${color}|${selected ? 1 : 0}`,
+        create: () => stopMarker(stop, buildStopIcon(stop.stopId, null, color, selected), selected ? 1000 : 0),
       })
-
-      marker.bindPopup(buildStopPopup(stop), {
-        className: 'map-popup',
-        closeButton: true,
-        maxWidth: 260,
-        minWidth: 200,
-        autoPanPadding: [16, 16],
-      })
-      marker.on('popupopen', () => prefetchStop(stop.stopId))
-      marker.addTo(mapLayer)
       continue
     }
 
@@ -4201,34 +4330,45 @@ function paintStopClusters(stops: NetworkStop[], zoom: number): void {
     // la casilla: asi cae encima del barrio y no en mitad del campo de al lado.
     const center: [number, number] = [cell.lat / cell.stops.length, cell.lon / cell.stops.length]
     const size = cell.stops.length >= 25 ? 52 : cell.stops.length >= 10 ? 46 : 40
+    const members = cell.stops.map((stop) => stop.stopId).join(',')
 
-    const marker = L.marker(center, {
-      icon: L.divIcon({
-        className: '',
-        html: `<span class="map-cluster" style="--cluster-size:${size}px">${cell.stops.length}</span>`,
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2],
-      }),
-      keyboard: false,
-      zIndexOffset: 200,
+    items.push({
+      // Las casillas dependen del acercamiento: la misma clave a otro nivel es
+      // otra casilla. Lo que lleva dentro decide si sigue siendo el mismo grupo.
+      id: `grupo:${Math.floor(zoom)}:${cellKey}`,
+      sig: members,
+      create: () => {
+        const marker = L.marker(center, {
+          icon: L.divIcon({
+            className: '',
+            html: `<span class="map-cluster" style="--cluster-size:${size}px">${cell.stops.length}</span>`,
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2],
+          }),
+          keyboard: false,
+          zIndexOffset: 200,
+        })
+
+        marker.on('click', () => {
+          if (!map) {
+            return
+          }
+
+          // Encuadrar lo que hay dentro desgrana el grupo en un solo toque. El
+          // limite evita que un grupo de dos paradas pegadas dispare el mapa hasta
+          // el maximo acercamiento.
+          map.fitBounds(
+            cell.stops.map((stop) => [stop.lat, stop.lon] as [number, number]),
+            { padding: [48, 48], maxZoom: CLUSTER_MAX_ZOOM + 1 },
+          )
+        })
+
+        return marker
+      },
     })
-
-    marker.on('click', () => {
-      if (!map) {
-        return
-      }
-
-      // Encuadrar lo que hay dentro desgrana el grupo en un solo toque. El
-      // limite evita que un grupo de dos paradas pegadas dispare el mapa hasta
-      // el maximo acercamiento.
-      map.fitBounds(
-        cell.stops.map((stop) => [stop.lat, stop.lon] as [number, number]),
-        { padding: [48, 48], maxZoom: CLUSTER_MAX_ZOOM + 1 },
-      )
-    })
-
-    marker.addTo(mapLayer)
   }
+
+  return items
 }
 
 /**
@@ -5074,7 +5214,13 @@ function syncMapsMap(): void {
   const maps = state.maps
   const location = state.geo.location
   const signature = [
-    location ? `${location.point.lat.toFixed(5)},${location.point.lon.toFixed(5)}` : '',
+    // La posición solo cuenta cuando es lo único que se dibuja (sin origen ni
+    // destino, ver `paintRoute`). Si contara siempre, cada lectura del GPS
+    // borraría el trazado y con él el globo de la parada que se estuviera
+    // mirando, y además volvería a encuadrar el mapa debajo del dedo.
+    location && !maps.origin && !maps.destination
+      ? `${location.point.lat.toFixed(5)},${location.point.lon.toFixed(5)}`
+      : '',
     maps.origin ? `${maps.origin.lat},${maps.origin.lon}` : '',
     maps.destination ? `${maps.destination.lat},${maps.destination.lon}` : '',
     maps.plan?.status ?? '',

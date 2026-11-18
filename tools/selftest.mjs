@@ -86,6 +86,7 @@ async function main() {
     'bus-position.ts',
     'traffic-cuts.ts',
     'gtfs-feed.ts',
+    'map-layers.ts',
   ])
 
   const { parseStopFeed } = await import(pathToUrl(path.join(build, 'arrival-parser.js')))
@@ -1717,6 +1718,66 @@ async function main() {
     check('"Ver tiempos" aprovecha lo ya adelantado',
       mainSource.includes('async function ensureStopFresh(')
         && mainSource.includes('await ensureStopFresh(stopId)'))
+
+    // El cartel de la parada se cerraba solo nada mas abrirse: el globo
+    // desplaza el mapa para caber, el desplazamiento repintaba con
+    // clearLayers() y quitar el marcador cierra su globo. Ahora se reconcilia.
+    {
+      const { reconcileLayers, sweepOrphanLayers } = await import(
+        pathToUrl(path.join(build, 'map-layers.js')))
+      const onMap = new Set()
+      const open = new Set()
+      let created = 0
+      const ops = {
+        add: (layer) => onMap.add(layer),
+        remove: (layer) => { onMap.delete(layer); open.delete(layer) },
+        isOpen: (layer) => open.has(layer),
+        restyle: (current, next) => { current.look = next.look; return true },
+      }
+      const want = (ids, look = () => 'normal') => ids.map((id) => ({
+        id, sig: look(id), create: () => { created += 1; return { id, look: look(id) } },
+      }))
+      const drawn = new Map()
+
+      reconcileLayers(drawn, want(['a', 'b', 'c']), ops)
+      const markerB = drawn.get('b').layer
+      open.add(markerB)
+      created = 0
+      // El mismo encuadre otra vez (el repintado que provocaba el globo).
+      reconcileLayers(drawn, want(['a', 'b', 'c']), ops)
+      check('repintar lo mismo no quita ni recrea marcadores',
+        created === 0 && onMap.has(markerB) && open.has(markerB) && onMap.size === 3)
+
+      // Se arrastra el mapa: entra "d", sale "a"; "b" sigue y con su globo.
+      reconcileLayers(drawn, want(['b', 'c', 'd']), ops)
+      check('al mover el mapa la parada del globo abierto sigue siendo la misma',
+        drawn.get('b').layer === markerB && open.has(markerB) && !drawn.has('a') && created === 1)
+
+      // Se elige la parada: cambia de aspecto en su sitio, sin recrearla.
+      reconcileLayers(drawn, want(['b', 'c', 'd'], (id) => (id === 'b' ? 'elegida' : 'normal')), ops)
+      check('elegir la parada retoca su icono sin quitar el marcador',
+        drawn.get('b').layer === markerB && markerB.look === 'elegida' && open.has(markerB))
+
+      // La del globo abierto se queda aunque el encuadre la deje fuera...
+      reconcileLayers(drawn, want(['c', 'd']), ops)
+      check('el marcador con el globo abierto no se quita aunque salga del dibujo',
+        onMap.has(markerB) && drawn.get('b').orphan === true)
+      // ...y se va en cuanto se cierra el globo.
+      open.delete(markerB)
+      sweepOrphanLayers(drawn, ops)
+      check('al cerrar el globo se quita el marcador que ya no tocaba',
+        !onMap.has(markerB) && !drawn.has('b') && onMap.size === 2)
+
+      check('el mapa del buscador se reconcilia en vez de borrarse entero',
+        mainSource.includes('reconcileLayers(mapItems, items, mapLayerOps)')
+          && !/mapLayer\.clearLayers\(\)\s*\n\s*paintYouAreHere/.test(mainSource)
+          && mainSource.includes("map.on('popupclose'"))
+      check('"estás aquí" va en su capa y el GPS no repinta las paradas',
+        mainSource.includes('paintYouAreHere(mapMeLayer, [])')
+          && !/here \? `\$\{here\.lat\.toFixed\(5\)\}/.test(mainSource))
+      check('el GPS no borra el trazado de "Cómo llegar" con origen o destino puestos',
+        mainSource.includes('location && !maps.origin && !maps.destination'))
+    }
 
     // La animacion de bienvenida dura 1 s exacto, y el numero vive en UN sitio:
     // la hoja de estilo y main.ts tienen que decir lo mismo o la pantalla se
